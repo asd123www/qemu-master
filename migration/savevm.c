@@ -1566,7 +1566,6 @@ int qemu_savevm_state_complete_precopy_iterable(QEMUFile *f, bool in_postcopy)
 static
 int qemu_savevm_state_complete_precopy_iterable_shm(QEMUFile *f, bool in_postcopy)
 {
-    int64_t start_ts_each, end_ts_each;
     SaveStateEntry *se;
     int ret;
 
@@ -3620,6 +3619,12 @@ void qmp_snapshot_delete(const char *job_id,
 
 /* --------------------- shared-memory migration --------------------- */
 
+void shm_put_byte(shm_target *f, int v);
+void shm_put_buffer(shm_target *f, const uint8_t *buf, size_t size);
+void shm_put_be16(shm_target *f, unsigned int v);
+void shm_put_be32(shm_target *f, unsigned int v);
+void shm_put_be64(shm_target *f, uint64_t v);
+
 void shm_put_byte(shm_target *f, int v)
 {
     f->shm_ptr[f->shm_offset++] = v;
@@ -3760,7 +3765,7 @@ int qemu_savevm_state_complete_precopy_shm(shm_target *shm_obj)
     /* Zezhou: in latency(downtime & total) critical path.
      *     Around 2327109 ns...
      */ 
-    uint64_t start_time = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    // uint64_t start_time = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
     // non-iterable: other devices.
     ret = qemu_savevm_state_complete_precopy_non_iterable(f, 0, 1);
@@ -3771,12 +3776,13 @@ int qemu_savevm_state_complete_precopy_shm(shm_target *shm_obj)
 
     assert(sioc->usage <= size);
     shm_put_buffer(shm_obj, sioc->data, sioc->usage);
+
     // printf("Elapsed time: %lld ns\n", qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start_time);
 
     return 0;
 }
 
-
+int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis);
 int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis)
 {
     uint8_t section_type;

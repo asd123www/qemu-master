@@ -4671,7 +4671,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
-static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, shm_target *shm_obj)
+static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, void *shm_obj)
 {
     int ret = 0;
     /*
@@ -4717,7 +4717,7 @@ static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, shm_target *s
 
                 // load pages in this block.
                 void *host = host_from_ram_block_offset(block, 0);
-                memcpy(host, shm_obj->ram + block->pages_offset_shm, block->used_length);
+                memcpy(host, ((shm_target *)shm_obj)->ram + block->pages_offset_shm, block->used_length);
                 // block->host=shm_obj->ram + block->pages_offset_shm;
             }
         }
@@ -4727,11 +4727,11 @@ static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, shm_target *s
     pid_t controller_pid;
     FILE *pid_file = fopen("./dst_controller.pid", "r");
     assert(pid_file != NULL);
-    fscanf(pid_file, "%d", &controller_pid);
+    assert(fscanf(pid_file, "%d", &controller_pid));
     fclose(pid_file);
     assert(kill(controller_pid, SIGUSR1) == 0);
 
-    printf("asd123www: shm load time: %llu, and we noticed the controller.\n", qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start_time);
+    printf("asd123www: shm load time: %lu, and we noticed the controller.\n", qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start_time);
 
     return ret;
 }

@@ -657,7 +657,7 @@ static void qemu_start_incoming_migration(const char *uri, bool has_channels,
     // asd123www_impl: read pid here. 
     FILE *pid_file = fopen("./controller.pid", "r");
     if (pid_file) {
-        fscanf(pid_file, "%d", &mis->controller_pid);
+        assert(fscanf(pid_file, "%d", &mis->controller_pid) == 1);
         fclose(pid_file);
         printf("dst: The pid of controller is %d\n", mis->controller_pid);
     } else {
@@ -3998,7 +3998,7 @@ static void migration_completion_shm(MigrationState *s)
     pid_t controller_pid;
     FILE *pid_file = fopen("./src_controller.pid", "r");
     assert(pid_file != NULL);
-    fscanf(pid_file, "%d", &controller_pid);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
     fclose(pid_file);
     assert(kill(controller_pid, SIGUSR1) == 0);
 
@@ -4019,9 +4019,8 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     qatomic_set(&s->atomic_switchover, false);
 
     int count = 0;
-    int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    // int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 
-    uint64_t sum = 0;
     while (1) {
         qemu_savevm_state_iterate_shm(s->to_dst_file);
         // usleep(50000); // 50ms --> 1% degradation in cpu.
@@ -4045,7 +4044,7 @@ static void *shm_migration_thread(void *opaque)
 {
     MigrationState *s = opaque;
     MigrationThread *thread = NULL;
-    MigThrError thr_error;
+    // MigThrError thr_error;
 
     thread = migration_threads_add("shared_memory_migration", qemu_get_thread_id());
 
@@ -4077,6 +4076,7 @@ static void *shm_migration_thread(void *opaque)
             continue;
         } else if (iter_state == MIG_ITERATE_BREAK) {
             break;
+            goto out;
         }
     }
     
@@ -4089,6 +4089,7 @@ out: // clean
 }
 
 /* shm_obj initialization */
+void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size);
 void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size) 
 {
     /* shm_obj initialization */
@@ -4104,7 +4105,7 @@ void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size)
 void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, Error **errp) 
 {
     Error *local_err = NULL;
-    uint64_t rate_limit;
+    // uint64_t rate_limit;
     MigrationState *s = migrate_get_current();
     assert(s->state == MIGRATION_STATUS_NONE);
 
@@ -4138,7 +4139,7 @@ fail:
 
 /* Zezhou: switchover to destination.
  */
-void qmp_shm_migrate_switchover() 
+void qmp_shm_migrate_switchover(void) 
 {
     MigrationState *s = migrate_get_current();
     assert(s->state == MIGRATION_STATUS_ACTIVE);
@@ -4154,7 +4155,7 @@ static void coroutine_fn
 process_incoming_migration_shm_co(void *opaque)
 {
     MigrationIncomingState *mis = migration_incoming_get_current();
-    PostcopyState ps;
+    // PostcopyState ps;
     int ret;
 
     mis->largest_page_size = qemu_ram_pagesize_largest();

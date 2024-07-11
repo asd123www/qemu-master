@@ -225,7 +225,7 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
             }
         } else {
             static uint64_t prefix_len = 0;
-            printf("memory chunk size: %lld\n", size);
+            printf("memory chunk size: %lu\n", size);
             // Map the shared memory object into the process's address space
             void *shm_ptr = mmap(0, 10ll * 1024 * 1024 * 1024, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
             if (shm_ptr == MAP_FAILED) {

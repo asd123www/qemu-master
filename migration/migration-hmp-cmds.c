@@ -511,9 +511,6 @@ void hmp_migrate_incoming_shm(Monitor *mon, const QDict *qdict)
     }
 
     qmp_migrate_incoming_shm(shm_ptr, shm_size, &err);
-
-end:
-    hmp_handle_error(mon, err);
 }
 
 
@@ -900,7 +897,8 @@ void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
     unsigned long nodemask = 1 << 1; // numa_node_binding.
     if (mbind(shm_ptr, shm_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0) != 0) {
         perror("mbind");
-        return 1;
+        exit(-1);
+        return;
     }
 
     // migrate via shared memory.
@@ -918,7 +916,7 @@ void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
  */ 
 void hmp_shm_migrate_switchover(Monitor *mon, const QDict *qdict)
 {
-    qmp_shm_migrate_switchover(NULL);
+    qmp_shm_migrate_switchover();
     return;
 }
 

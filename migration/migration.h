@@ -492,6 +492,12 @@ struct MigrationState {
     bool atomic_switchover;
 };
 
+// Zezhou's shm.
+void qmp_shm_migrate_switchover(void);
+void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, Error **errp);
+void qmp_migrate_incoming_shm(void *shm_ptr, uint64_t shm_size, Error **errp);
+
+
 void migrate_set_state(int *state, int old_state, int new_state);
 
 void migration_fd_process_incoming(QEMUFile *f);
