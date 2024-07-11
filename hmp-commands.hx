@@ -970,6 +970,22 @@ SRST
   as the ``-incoming`` option).
 ERST
 
+
+{
+        .name       = "migrate_incoming_shm",
+        .args_type  = "uri:s,value:i",
+        .params     = "uri value",
+        .help       = "Continue an incoming migration from an -incoming defer",
+        .cmd        = hmp_migrate_incoming_shm,
+    },
+
+SRST
+``migrate_incoming_shm`` *uri* *value*
+  Continue an incoming migration using the *uri* shared memory object (that has the same syntax
+  as the ``-incoming`` option).
+ERST
+
+
     {
         .name       = "migrate_recover",
         .args_type  = "uri:s",
@@ -1017,6 +1033,32 @@ ERST
         .help       = "Set the parameter for migration",
         .cmd        = hmp_migrate_set_parameter,
         .command_completion = migrate_set_parameter_completion,
+    },
+
+SRST
+``shm_migrate`` *capability* *state*
+  EMpower: fast VM migration via shared memory.
+ERST
+
+    {
+        .name       = "shm_migrate",
+        .args_type  = "uri:s,value:i",
+        .params     = "uri value",
+        .help       = "Start pre-copy, writing pages into shared memory, path & memory size GB",
+        .cmd        = hmp_shm_migrate,
+    },
+
+SRST
+``shm_migrate_switchover`` *capability* *state*
+  EMpower: fast VM migration via shared memory.
+ERST
+
+    {
+        .name       = "shm_migrate_switchover",
+        .args_type  = "",
+        .params     = "",
+        .help       = "Destination was selected, stop execution on src and switchover to dest.",
+        .cmd        = hmp_shm_migrate_switchover,
     },
 
 SRST

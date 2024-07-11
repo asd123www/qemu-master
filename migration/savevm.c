@@ -766,7 +766,8 @@ static void savevm_state_handler_remove(SaveStateEntry *se)
     QTAILQ_REMOVE(&savevm_state.handlers, se, entry);
 }
 
-/* TODO: Individual devices generally have very little idea about the rest
+/* Insert a device memory for live migration.
+   TODO: Individual devices generally have very little idea about the rest
    of the system, so instance_id should be removed/replaced.
    Meanwhile pass -1 as instance_id if you do not already have a clearly
    distinguishing id for all instances of your device class. */
@@ -951,6 +952,8 @@ void vmstate_unregister(VMStateIf *obj, const VMStateDescription *vmsd,
 static int vmstate_load(QEMUFile *f, SaveStateEntry *se)
 {
     trace_vmstate_load(se->idstr, se->vmsd ? se->vmsd->name : "(old)");
+    // For `ram`, it's vmsd is null, and other devices is not null.
+    // So we only need to call a customized load_state function for `ram`.
     if (!se->vmsd) {         /* Old style */
         return se->ops->load_state(f, se->opaque, se->load_version_id);
     }
@@ -1078,6 +1081,7 @@ void qemu_savevm_send_colo_enable(QEMUFile *f)
     qemu_savevm_command_send(f, MIG_CMD_ENABLE_COLO, 0, NULL);
 }
 
+// 08 00 02 00 04 00 00 00 01
 void qemu_savevm_send_ping(QEMUFile *f, uint32_t value)
 {
     uint32_t buf;
@@ -1087,6 +1091,7 @@ void qemu_savevm_send_ping(QEMUFile *f, uint32_t value)
     qemu_savevm_command_send(f, MIG_CMD_PING, sizeof(value), (uint8_t *)&buf);
 }
 
+// 08 00 01 00 00
 void qemu_savevm_send_open_return_path(QEMUFile *f)
 {
     trace_savevm_send_open_return_path();
@@ -1248,6 +1253,10 @@ void qemu_savevm_non_migratable_list(strList **reasons)
     }
 }
 
+/* Send VM state header to the dest.
+ * In my experiment, it's "QEVM pc-i440fx-9.0".
+ * You can add qemu_fflush(f) to send the data instantly.
+ */
 void qemu_savevm_state_header(QEMUFile *f)
 {
     MigrationState *s = migrate_get_current();
@@ -1312,6 +1321,8 @@ int qemu_savevm_state_prepare(Error **errp)
     return 0;
 }
 
+// asd123www: in this function, we will call each device's registered save function.
+// ram will register the `savevm_ram_handlers`, therefore we will call `ram_save_setup`.
 void qemu_savevm_state_setup(QEMUFile *f)
 {
     MigrationState *ms = migrate_get_current();
@@ -1323,6 +1334,11 @@ void qemu_savevm_state_setup(QEMUFile *f)
     json_writer_start_array(ms->vmdesc, "devices");
 
     trace_savevm_state_setup();
+    
+    /* Here we enumerate each `device`, like `i8259`, `PCIBUS`, `serial`, etc.
+     * I don't know what is the meaning of those names.
+     * But our focus is `ram`, the most difficult one to migrate.
+     */
     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
         if (se->vmsd && se->vmsd->early_setup) {
             ret = vmstate_save(f, se, ms->vmdesc);
@@ -1341,8 +1357,12 @@ void qemu_savevm_state_setup(QEMUFile *f)
                 continue;
             }
         }
-        save_section_header(f, se, QEMU_VM_SECTION_START);
 
+        /* Only `ram` device comes to this point.
+         * Here `se->ops` points to `savevm_ram_handlers`.
+         * Therefore, this will jump to `ram_save_setup()` in `ram.c`.
+         */
+        save_section_header(f, se, QEMU_VM_SECTION_START);
         ret = se->ops->save_setup(f, se->opaque);
         save_section_footer(f, se);
         if (ret < 0) {
@@ -1490,6 +1510,9 @@ void qemu_savevm_state_complete_postcopy(QEMUFile *f)
     qemu_fflush(f);
 }
 
+/* Zezhou: `f == NULL` means we are using shared memory migration.
+ * 
+ */
 static
 int qemu_savevm_state_complete_precopy_iterable(QEMUFile *f, bool in_postcopy)
 {
@@ -1514,11 +1537,16 @@ int qemu_savevm_state_complete_precopy_iterable(QEMUFile *f, bool in_postcopy)
         start_ts_each = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
         trace_savevm_section_start(se->idstr, se->section_id);
 
-        save_section_header(f, se, QEMU_VM_SECTION_END);
+        // 03 00 00 00 02
+        if (f != NULL) {
+            save_section_header(f, se, QEMU_VM_SECTION_END);
+        }
 
         ret = se->ops->save_live_complete_precopy(f, se->opaque);
         trace_savevm_section_end(se->idstr, se->section_id, ret);
-        save_section_footer(f, se);
+        if (f != NULL) {
+            save_section_footer(f, se);
+        }
         if (ret < 0) {
             qemu_file_set_error(f, ret);
             return -1;
@@ -1529,6 +1557,44 @@ int qemu_savevm_state_complete_precopy_iterable(QEMUFile *f, bool in_postcopy)
     }
 
     trace_vmstate_downtime_checkpoint("src-iterable-saved");
+
+    return 0;
+}
+
+/* Zezhou: shared memory complete precopy.
+ */
+static
+int qemu_savevm_state_complete_precopy_iterable_shm(QEMUFile *f, bool in_postcopy)
+{
+    int64_t start_ts_each, end_ts_each;
+    SaveStateEntry *se;
+    int ret;
+
+    assert(f == NULL);
+    assert(in_postcopy == 0);
+
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (!se->ops ||
+            (in_postcopy && se->ops->has_postcopy &&
+             se->ops->has_postcopy(se->opaque)) ||
+            !se->ops->save_live_complete_precopy) {
+            continue;
+        }
+
+        if (se->ops->is_active) {
+            if (!se->ops->is_active(se->opaque)) {
+                continue;
+            }
+        }
+
+        ret = se->ops->save_live_complete_precopy_shm(f, se->opaque);
+        if (ret < 0) {
+            qemu_file_set_error(f, ret);
+            return -1;
+        }
+    }
+
+    // trace_vmstate_downtime_checkpoint("src-iterable-saved");
 
     return 0;
 }
@@ -1614,9 +1680,11 @@ int qemu_savevm_state_complete_precopy(QEMUFile *f, bool iterable_only,
 
     trace_savevm_state_complete_precopy();
 
+    // save all cpu states.
     cpu_synchronize_all_states();
 
     if (!in_postcopy || iterable_only) {
+        // iterable: RAM.
         ret = qemu_savevm_state_complete_precopy_iterable(f, in_postcopy);
         if (ret) {
             return ret;
@@ -1627,6 +1695,7 @@ int qemu_savevm_state_complete_precopy(QEMUFile *f, bool iterable_only,
         goto flush;
     }
 
+    // non-iterable: other devices.
     ret = qemu_savevm_state_complete_precopy_non_iterable(f, in_postcopy,
                                                           inactivate_disks);
     if (ret) {
@@ -2856,7 +2925,6 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)
 retry:
     while (true) {
         section_type = qemu_get_byte(f);
-
         ret = qemu_file_get_error_obj_any(f, mis->postcopy_qemufile_dst, NULL);
         if (ret) {
             break;
@@ -2949,6 +3017,8 @@ int qemu_loadvm_state(QEMUFile *f)
 
     cpu_synchronize_all_pre_loadvm();
 
+    // In this function, we load pages in different sections.
+    // So we modified the page format, we need to modify this.
     ret = qemu_loadvm_state_main(f, mis);
     qemu_event_set(&mis->main_thread_load_event);
 
@@ -2962,7 +3032,6 @@ int qemu_loadvm_state(QEMUFile *f)
     if (ret == 0) {
         ret = qemu_file_get_error(f);
     }
-
     /*
      * Try to read in the VMDESC section as well, so that dumping tools that
      * intercept our migration stream have the chance to see it.
@@ -3543,4 +3612,331 @@ void qmp_snapshot_delete(const char *job_id,
     s->devices = QAPI_CLONE(strList, devices);
 
     job_start(&s->common);
+}
+
+
+
+
+
+/* --------------------- shared-memory migration --------------------- */
+
+void shm_put_byte(shm_target *f, int v)
+{
+    f->shm_ptr[f->shm_offset++] = v;
+}
+void shm_put_buffer(shm_target *f, const uint8_t *buf, size_t size)
+{
+    assert(f->shm_offset <= f->shm_size);
+    memcpy(f->shm_ptr + f->shm_offset, buf, size);
+    f->shm_offset += size;
+}
+void shm_put_be16(shm_target *f, unsigned int v) 
+{
+    shm_put_byte(f, v >> 8);
+    shm_put_byte(f, v);
+}
+void shm_put_be32(shm_target *f, unsigned int v) 
+{
+    shm_put_byte(f, v >> 24);
+    shm_put_byte(f, v >> 16);
+    shm_put_byte(f, v >> 8);
+    shm_put_byte(f, v);
+}
+void shm_put_be64(shm_target *f, uint64_t v) 
+{
+    shm_put_be32(f, v >> 32);
+    shm_put_be32(f, v);
+}
+
+
+
+
+/* Send VM state header to the dest.
+ * In my experiment, it's "QEVM pc-i440fx-9.0".
+ * You can add qemu_fflush(f) to send the data instantly.
+ * 
+ * This is not going to happen in critical path, so it's fine to have one extra copy.
+ */
+void qemu_savevm_state_header_shm(shm_target *shm_obj)
+{
+    uint32_t size = 1024 * 1024;
+    QIOChannelBuffer *sioc = qio_channel_buffer_new(size);
+    QEMUFile *f = qemu_file_new_output(QIO_CHANNEL(sioc));
+    qemu_savevm_state_header(f);
+    qemu_fflush(f);
+
+    assert(sioc->usage <= size);
+    shm_put_buffer(shm_obj, sioc->data, sioc->usage);
+
+    // delete QEMUFile *f and sioc.
+    qemu_fclose(f);
+    object_unref(OBJECT(sioc));
+}
+
+void qemu_savevm_state_setup_shm(shm_target *shm_obj)
+{
+    uint32_t size = 1024 * 1024;
+    QIOChannelBuffer *sioc = qio_channel_buffer_new(size);
+    QEMUFile *f = qemu_file_new_output(QIO_CHANNEL(sioc));
+
+    MigrationState *ms = migrate_get_current();
+    SaveStateEntry *se;
+    Error *local_err = NULL;
+    int ret = 0;
+
+    assert(qemu_target_page_size() == 4096);
+    json_writer_int64(ms->vmdesc, "page_size", qemu_target_page_size());
+    json_writer_start_array(ms->vmdesc, "devices");
+
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (se->vmsd && se->vmsd->early_setup) {
+            ret = vmstate_save(f, se, ms->vmdesc);
+            if (ret) {
+                qemu_file_set_error(f, ret);
+                break;
+            }
+            continue;
+        }
+
+        if (!se->ops || !se->ops->save_setup) {
+            continue;
+        }
+        if (se->ops->is_active) {
+            if (!se->ops->is_active(se->opaque)) {
+                continue;
+            }
+        }
+
+        assert(se->ops->save_setup_shm);
+        /* Only `ram` device comes to this point.
+         * Here `se->ops` points to `savevm_ram_handlers`.
+         * Therefore, this will jump to `ram_save_setup()` in `ram.c`.
+         */
+        save_section_header(f, se, QEMU_VM_SECTION_START);
+        ret = se->ops->save_setup_shm(f, se->opaque, (void *)shm_obj);
+        save_section_footer(f, se);
+        if (ret < 0) {
+            qemu_file_set_error(f, ret);
+            break;
+        }
+    }
+
+    if (ret) {
+        return;
+    }
+
+    if (precopy_notify(PRECOPY_NOTIFY_SETUP, &local_err)) {
+        error_report_err(local_err);
+    }
+
+    qemu_fflush(f);
+
+    assert(sioc->usage <= size);
+    shm_put_buffer(shm_obj, sioc->data, sioc->usage);
+
+    // delete QEMUFile *f and sioc.
+    qemu_fclose(f);
+    object_unref(OBJECT(sioc));
+}
+
+int qemu_savevm_state_complete_precopy_shm(shm_target *shm_obj)
+{
+    int ret;
+
+    // save all cpu states.
+    cpu_synchronize_all_states();
+
+    uint32_t size = 1024 * 1024;
+    QIOChannelBuffer *sioc = qio_channel_buffer_new(size);
+    QEMUFile *f = qemu_file_new_output(QIO_CHANNEL(sioc));
+
+    // iterable: RAM.
+    ret = qemu_savevm_state_complete_precopy_iterable_shm(NULL, false);
+    if (ret) {
+        return ret;
+    }
+
+
+    /* Zezhou: in latency(downtime & total) critical path.
+     *     Around 2327109 ns...
+     */ 
+    uint64_t start_time = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+    // non-iterable: other devices.
+    ret = qemu_savevm_state_complete_precopy_non_iterable(f, 0, 1);
+    if (ret) {
+        return ret;
+    }
+    qemu_fflush(f);
+
+    assert(sioc->usage <= size);
+    shm_put_buffer(shm_obj, sioc->data, sioc->usage);
+    // printf("Elapsed time: %lld ns\n", qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start_time);
+
+    return 0;
+}
+
+
+int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis)
+{
+    uint8_t section_type;
+    int ret = 0;
+    
+    section_type = qemu_get_byte(f);
+    assert(section_type == 0x01);
+
+    ret = qemu_loadvm_section_start_full(f, mis, section_type);
+    if (ret < 0) {
+        goto out;
+    }
+
+    // now we gonna load ram.
+    SaveStateEntry *se;
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (strcmp(se->idstr, "ram") == 0) {
+            break;
+        }
+    }
+    assert(se != NULL && se->section_id == 0x02);
+    assert(se->vmsd == NULL);
+    ret = se->ops->load_state_shm(f, se->opaque, se->load_version_id, (void *)(&mis->shm_obj));
+    if (ret < 0) {
+        error_report("error while loading state section id %d(%s)",
+                     se->section_id, se->idstr);
+        goto out;
+    }
+
+    // load other devices.
+    while (true) {
+        section_type = qemu_get_byte(f);
+        if (section_type == QEMU_VM_EOF) break;
+        assert(section_type == 0x04);
+        ret = qemu_loadvm_section_start_full(f, mis, section_type);
+        if (ret < 0) {
+            goto out;
+        }
+    }
+
+    return 0;
+
+out:
+    return ret;
+}
+
+int qemu_loadvm_state_shm(QEMUFile *f)
+{
+    MigrationIncomingState *mis = migration_incoming_get_current();
+    Error *local_err = NULL;
+    int ret;
+
+    if (qemu_savevm_state_blocked(&local_err)) {
+        error_report_err(local_err);
+        return -EINVAL;
+    }
+
+    ret = qemu_loadvm_state_header(f);
+    if (ret) {
+        return ret;
+    }
+
+    if (qemu_loadvm_state_setup(f) != 0) {
+        return -EINVAL;
+    }
+
+    if (migrate_switchover_ack()) {
+        qemu_loadvm_state_switchover_ack_needed(mis);
+    }
+
+    cpu_synchronize_all_pre_loadvm();
+
+    // In this function, we load pages in different sections.
+    // So we modified the page format, we need to modify this.
+    ret = qemu_loadvm_state_main_shm(f, mis);
+    qemu_event_set(&mis->main_thread_load_event);
+
+    trace_qemu_loadvm_state_post_main(ret);
+
+    if (mis->have_listen_thread) {
+        /* Listen thread still going, can't clean up yet */
+        return ret;
+    }
+
+    if (ret == 0) {
+        ret = qemu_file_get_error(f);
+    }
+
+    /*
+     * Try to read in the VMDESC section as well, so that dumping tools that
+     * intercept our migration stream have the chance to see it.
+     */
+
+    /* We've got to be careful; if we don't read the data and just shut the fd
+     * then the sender can error if we close while it's still sending.
+     * We also mustn't read data that isn't there; some transports (RDMA)
+     * will stall waiting for that data when the source has already closed.
+     */
+    if (ret == 0 && should_send_vmdesc()) {
+        uint8_t *buf;
+        uint32_t size;
+        uint8_t  section_type = qemu_get_byte(f);
+
+        if (section_type != QEMU_VM_VMDESCRIPTION) {
+            error_report("Expected vmdescription section, but got %d",
+                         section_type);
+            /*
+             * It doesn't seem worth failing at this point since
+             * we apparently have an otherwise valid VM state
+             */
+        } else {
+            buf = g_malloc(0x1000);
+            size = qemu_get_be32(f);
+
+            while (size > 0) {
+                uint32_t read_chunk = MIN(size, 0x1000);
+                qemu_get_buffer(f, buf, read_chunk);
+                size -= read_chunk;
+            }
+            g_free(buf);
+        }
+    }
+
+    qemu_loadvm_state_cleanup();
+    cpu_synchronize_all_post_init();
+
+    return ret;
+}
+
+int qemu_savevm_state_iterate_shm(QEMUFile *f)
+{
+    SaveStateEntry *se;
+    bool all_finished = true;
+    int ret;
+
+    trace_savevm_state_iterate();
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (!se->ops || !se->ops->save_live_iterate) {
+            continue;
+        }
+        if (se->ops->is_active &&
+            !se->ops->is_active(se->opaque)) {
+            continue;
+        }
+        if (se->ops->is_active_iterate &&
+            !se->ops->is_active_iterate(se->opaque)) {
+            continue;
+        }
+        
+        // print the device name.
+        ret = se->ops->save_live_iterate_shm(f, se->opaque);
+
+        if (ret < 0) {
+            error_report("failed to save SaveStateEntry with id(name): "
+                         "%d(%s): %d",
+                         se->section_id, se->idstr, ret);
+            return ret;
+        } else if (!ret) {
+            all_finished = false;
+        }
+    }
+    return all_finished;
 }

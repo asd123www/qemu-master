@@ -73,13 +73,26 @@ typedef enum {
     PREEMPT_THREAD_QUIT,
 } PreemptThreadStatus;
 
-/* State for the incoming migration */
+
+
+// zezhou: shared memory target.
+struct shm_target {
+    uint8_t *shm_ptr;
+    uint64_t shm_size;
+    uint64_t shm_offset;
+    uint8_t *ram;
+};
+typedef struct shm_target shm_target;
+#define SHM_MIGRATION_QUEUE_SIZE 1048576 // shared memory migration queue size.
+
+/* asd123www: State for the incoming migration */
 struct MigrationIncomingState {
     QEMUFile *from_src_file;
     /* Previously received RAM's RAMBlock pointer */
     RAMBlock *last_recv_block[RAM_CHANNEL_MAX];
     /* A hook to allow cleanup at the end of incoming migration */
     void *transport_data;
+    /* A hook to allow cleanup at the end of incoming migration */
     void (*transport_cleanup)(void *data);
     /*
      * Used to sync thread creations.  Note that we can't create threads in
@@ -227,6 +240,12 @@ struct MigrationIncomingState {
      * is needed as this field is updated serially.
      */
     unsigned int switchover_ack_pending_num;
+
+
+    // asd123www_impl: the pid of the controller process.
+    pid_t controller_pid;
+    // Zezhou: add shared memory object.
+    shm_target shm_obj;
 };
 
 MigrationIncomingState *migration_incoming_get_current(void);
@@ -465,6 +484,12 @@ struct MigrationState {
     bool switchover_acked;
     /* Is this a rdma migration */
     bool rdma_migration;
+
+
+    // Zezhou: add shared memory object.
+    shm_target shm_obj;
+    // Zezhou: atomic switchover signal.
+    bool atomic_switchover;
 };
 
 void migrate_set_state(int *state, int old_state, int new_state);

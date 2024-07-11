@@ -65,6 +65,7 @@ void hmp_delvm(Monitor *mon, const QDict *qdict);
 void hmp_migrate_cancel(Monitor *mon, const QDict *qdict);
 void hmp_migrate_continue(Monitor *mon, const QDict *qdict);
 void hmp_migrate_incoming(Monitor *mon, const QDict *qdict);
+void hmp_migrate_incoming_shm(Monitor *mon, const QDict *qdict);
 void hmp_migrate_recover(Monitor *mon, const QDict *qdict);
 void hmp_migrate_pause(Monitor *mon, const QDict *qdict);
 void hmp_migrate_set_capability(Monitor *mon, const QDict *qdict);
@@ -84,6 +85,8 @@ void hmp_change_medium(Monitor *mon, const char *device, const char *target,
                        const char *arg, const char *read_only, bool force,
                        Error **errp);
 void hmp_migrate(Monitor *mon, const QDict *qdict);
+void hmp_shm_migrate(Monitor *mon, const QDict *qdict);
+void hmp_shm_migrate_switchover(Monitor *mon, const QDict *qdict);
 void hmp_device_add(Monitor *mon, const QDict *qdict);
 void hmp_device_del(Monitor *mon, const QDict *qdict);
 void hmp_dump_guest_memory(Monitor *mon, const QDict *qdict);

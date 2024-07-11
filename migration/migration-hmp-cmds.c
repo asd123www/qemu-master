@@ -13,6 +13,10 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 #include "qemu/osdep.h"
 #include "block/qapi.h"
 #include "migration/snapshot.h"
@@ -33,6 +37,8 @@
 #include "options.h"
 #include "migration.h"
 
+#include <numaif.h>
+
 static void migration_global_dump(Monitor *mon)
 {
     MigrationState *ms = migrate_get_current();
@@ -52,6 +58,9 @@ static void migration_global_dump(Monitor *mon)
                    ms->clear_bitmap_shift);
 }
 
+/* If you type "info migrate" in monitor interface, it will trigger this function.
+ * Print migration information.
+ */
 void hmp_info_migrate(Monitor *mon, const QDict *qdict)
 {
     MigrationInfo *info;
@@ -238,6 +247,9 @@ void hmp_info_migrate(Monitor *mon, const QDict *qdict)
     qapi_free_MigrationInfo(info);
 }
 
+/* "info migrate_capabilities" in QEMU monitor.
+ * Check what features are enabled.
+ */
 void hmp_info_migrate_capabilities(Monitor *mon, const QDict *qdict)
 {
     MigrationCapabilityStatusList *caps, *cap;
@@ -255,6 +267,9 @@ void hmp_info_migrate_capabilities(Monitor *mon, const QDict *qdict)
     qapi_free_MigrationCapabilityStatusList(caps);
 }
 
+/* "info migrate_parameters" in QEMU monitor.
+ * I need to understand the meaning of those parameters.
+ */
 void hmp_info_migrate_parameters(Monitor *mon, const QDict *qdict)
 {
     MigrationParameters *params;
@@ -472,6 +487,37 @@ void hmp_migrate_incoming(Monitor *mon, const QDict *qdict)
 end:
     hmp_handle_error(mon, err);
 }
+
+/* Zezhou: shared-memory migration incoming.
+ */
+void hmp_migrate_incoming_shm(Monitor *mon, const QDict *qdict) 
+{
+    Error *err = NULL;
+    const char *uri = qdict_get_str(qdict, "uri");
+    uint64_t shm_size = qdict_get_int(qdict, "value"); // memory size, GB.
+    shm_size *= 1024ll * 1024 * 1024;
+
+    int shm_fd = shm_open(uri, O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("shm_open"); assert(0);
+        exit(EXIT_FAILURE);
+    }
+    
+    // Map the shared memory object into the process's address space
+    void *shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shm_ptr == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }
+
+    qmp_migrate_incoming_shm(shm_ptr, shm_size, &err);
+
+end:
+    hmp_handle_error(mon, err);
+}
+
+
+
 
 void hmp_migrate_recover(Monitor *mon, const QDict *qdict)
 {
@@ -706,6 +752,9 @@ void hmp_migrate_set_parameter(Monitor *mon, const QDict *qdict)
     hmp_handle_error(mon, err);
 }
 
+/* `migrate_start_postcopy` in monitor.
+ * start the postcopy migration.
+ */
 void hmp_migrate_start_postcopy(Monitor *mon, const QDict *qdict)
 {
     Error *err = NULL;
@@ -765,13 +814,17 @@ static void hmp_migrate_status_cb(void *opaque)
     qapi_free_MigrationInfo(info);
 }
 
+/* "migrate tcp:10.10.1.1" in QEMU monitor.
+ * entrance of migration logic.
+ */ 
 void hmp_migrate(Monitor *mon, const QDict *qdict)
 {
     bool detach = qdict_get_try_bool(qdict, "detach", false);
     bool blk = qdict_get_try_bool(qdict, "blk", false);
     bool inc = qdict_get_try_bool(qdict, "inc", false);
     bool resume = qdict_get_try_bool(qdict, "resume", false);
-    const char *uri = qdict_get_str(qdict, "uri");
+    const char *uri = qdict_get_str(qdict, "uri"); // the destination address.
+
     Error *err = NULL;
     g_autoptr(MigrationChannelList) caps = NULL;
     g_autoptr(MigrationChannel) channel = NULL;
@@ -814,6 +867,62 @@ void hmp_migrate(Monitor *mon, const QDict *qdict)
         timer_mod(status->timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
     }
 }
+
+
+/* Zezhou: shm_migrate.
+ */ 
+void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
+{
+    const char *shm_name = qdict_get_str(qdict, "uri"); // path to shared memory.
+    uint64_t shm_size = qdict_get_int(qdict, "value"); // memory size, GB.
+    shm_size *= 1024ll * 1024 * 1024;
+
+    Error *err = NULL;
+
+    // create the shared memory.
+    int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("shm_open");
+        exit(EXIT_FAILURE);
+    }
+    // Set the size of the shared memory object
+    if (ftruncate(shm_fd, shm_size) == -1) {
+        perror("ftruncate");
+        exit(EXIT_FAILURE);
+    }
+    // Map the shared memory object into the process's address space
+    void *shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shm_ptr == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }    
+    
+    unsigned long nodemask = 1 << 1; // numa_node_binding.
+    if (mbind(shm_ptr, shm_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0) != 0) {
+        perror("mbind");
+        return 1;
+    }
+
+    // migrate via shared memory.
+    qmp_shm_migrate(shm_ptr, shm_size, &err);
+
+    if (err) {
+        printf("hmp_shm_migrate: something wrong happened.");fflush(stdout);
+        exit(-1);
+    }
+
+    return;
+}
+
+/* Zezhou: shm_migrate_switchover.
+ */ 
+void hmp_shm_migrate_switchover(Monitor *mon, const QDict *qdict)
+{
+    qmp_shm_migrate_switchover(NULL);
+    return;
+}
+
+
 
 void migrate_set_capability_completion(ReadLineState *rs, int nb_args,
                                        const char *str)

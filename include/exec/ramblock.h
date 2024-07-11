@@ -42,7 +42,7 @@ struct RAMBlock {
     int fd;
     uint64_t fd_offset;
     size_t page_size;
-    /* dirty bitmap used during migration */
+    /* dirty bitmap used during migration, each page*/
     unsigned long *bmap;
 
     /*
@@ -56,6 +56,7 @@ struct RAMBlock {
      */
     off_t bitmap_offset;
     uint64_t pages_offset;
+    uint64_t pages_offset_shm;
 
     /* bitmap of already received pages in postcopy */
     unsigned long *receivedmap;

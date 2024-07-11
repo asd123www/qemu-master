@@ -60,9 +60,10 @@ QIOChannel *socket_send_channel_create_sync(Error **errp)
     return QIO_CHANNEL(sioc);
 }
 
+// The VM state and dest address.
 struct SocketConnectData {
     MigrationState *s;
-    char *hostname;
+    char *hostname; // the dest machine hostname
 };
 
 static void socket_connect_data_free(void *opaque)
@@ -75,6 +76,10 @@ static void socket_connect_data_free(void *opaque)
     g_free(data);
 }
 
+/* Src.
+ * after building connection with the dest, send data.
+ * asd123www: stop at the beginning, we can see the tcp syn pkts.
+ */
 static void socket_outgoing_migration(QIOTask *task,
                                       gpointer opaque)
 {
@@ -82,13 +87,16 @@ static void socket_outgoing_migration(QIOTask *task,
     QIOChannel *sioc = QIO_CHANNEL(qio_task_get_source(task));
     Error *err = NULL;
 
+    // error handling, we don't trigger this.
     if (qio_task_propagate_error(task, &err)) {
         trace_migration_socket_outgoing_error(error_get_pretty(err));
            goto out;
     }
 
+    // check trace points by `-trace`.
     trace_migration_socket_outgoing_connected(data->hostname);
 
+    // zero-copy option. default not enabled.
     if (migrate_zero_copy_send() &&
         !qio_channel_has_feature(sioc, QIO_CHANNEL_FEATURE_WRITE_ZERO_COPY)) {
         error_setg(&err, "Zero copy send feature not detected in host kernel");
@@ -99,6 +107,10 @@ out:
     object_unref(OBJECT(sioc));
 }
 
+/* Src.
+ * VM migration when using socket as transport.
+ * build connection & start pre-copy.
+ */
 void socket_start_outgoing_migration(MigrationState *s,
                                      SocketAddress *saddr,
                                      Error **errp)
@@ -118,6 +130,12 @@ void socket_start_outgoing_migration(MigrationState *s,
     }
 
     qio_channel_set_name(QIO_CHANNEL(sioc), "migration-socket-outgoing");
+    
+    /* after connecting to the dest, call `socket_outgoing_migration`.
+     * This step is asynchronous, I think qemu used some kind of event driven model.
+     * The control flow will return all the away to `hmp_migrate` and exit.
+     * If the connection is built, there will be an external signal trigger the execution of `socket_outgoing_migration`.
+     */
     qio_channel_socket_connect_async(sioc,
                                      saddr,
                                      socket_outgoing_migration,
@@ -181,6 +199,7 @@ void socket_start_incoming_migration(SocketAddress *saddr,
     }
 
     mis->transport_data = listener;
+    // asd123www: register a cleanup function.
     mis->transport_cleanup = socket_incoming_migration_end;
 
     qio_net_listener_set_client_func_full(listener,
