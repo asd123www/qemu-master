@@ -751,9 +751,13 @@ process_incoming_migration_co(void *opaque)
     migrate_set_state(&mis->state, MIGRATION_STATUS_SETUP,
                       MIGRATION_STATUS_ACTIVE);
 
+    int64_t vm_start_time = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
     mis->loadvm_co = qemu_coroutine_self();
     ret = qemu_loadvm_state(mis->from_src_file);
     mis->loadvm_co = NULL;
+
+    printf("qemu_loadvm_state time: %ld\n", qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - vm_start_time);
 
     trace_vmstate_downtime_checkpoint("dst-precopy-loadvm-completed");
 
@@ -794,7 +798,20 @@ process_incoming_migration_co(void *opaque)
         goto fail;
     }
 
+    // Zezhou: vm is about to restart at dst, tell the dst controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
+
     migration_bh_schedule(process_incoming_migration_bh, mis);
+
+    // Pre-copy migration, end post-copy immediately.
+    if (!migrate_postcopy_ram()) {
+        assert(kill(controller_pid, SIGUSR1) == 0);
+    }
     return;
 fail:
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
@@ -2801,6 +2818,14 @@ static void migration_completion(MigrationState *s)
     int current_active_state = s->state;
 
     if (s->state == MIGRATION_STATUS_ACTIVE) {
+        // Zezhou: pre-copy finishes, signal the src control.
+        pid_t controller_pid;
+        FILE *pid_file = fopen("./src_controller.pid", "r");
+        assert(pid_file != NULL);
+        assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+        fclose(pid_file);
+        assert(kill(controller_pid, SIGUSR1) == 0);
+
         ret = migration_completion_precopy(s, &current_active_state);
     } else if (s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE) {
         migration_completion_postcopy(s);
