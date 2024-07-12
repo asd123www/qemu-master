@@ -798,6 +798,8 @@ process_incoming_migration_co(void *opaque)
         goto fail;
     }
 
+    migration_bh_schedule(process_incoming_migration_bh, mis);
+
     // Zezhou: vm is about to restart at dst, tell the dst controller.
     pid_t controller_pid;
     FILE *pid_file = fopen("./dst_controller.pid", "r");
@@ -806,11 +808,9 @@ process_incoming_migration_co(void *opaque)
     fclose(pid_file);
     assert(kill(controller_pid, SIGUSR1) == 0);
 
-    migration_bh_schedule(process_incoming_migration_bh, mis);
-
     // Pre-copy migration, end post-copy immediately.
     if (!migrate_postcopy_ram()) {
-        assert(kill(controller_pid, SIGUSR1) == 0);
+        assert(kill(controller_pid, SIGUSR2) == 0);
     }
     return;
 fail:

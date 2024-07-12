@@ -674,7 +674,7 @@ int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)
     assert(pid_file != NULL);
     assert(fscanf(pid_file, "%d", &controller_pid) == 1);
     fclose(pid_file);
-    assert(kill(controller_pid, SIGUSR1) == 0);
+    assert(kill(controller_pid, SIGUSR2) == 0);
 
     return 0;
 }
