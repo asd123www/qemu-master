@@ -3980,7 +3980,17 @@ static void migration_completion_shm(MigrationState *s)
     int ret = 0;
     int current_active_state = s->state;
 
+    // Zezhou: read source control process pid.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./src_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+
     if (s->state == MIGRATION_STATUS_ACTIVE) {
+        // Zezhou: pre-copy finishes, signal the src control.
+        assert(kill(controller_pid, SIGUSR2) == 0);
+
         // code path is here.
         ret = migration_completion_precopy_shm(s, &current_active_state);
     } else if (s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE) {
@@ -3995,11 +4005,6 @@ static void migration_completion_shm(MigrationState *s)
     }
 
     // Zezhou: the image in shm is complete, signal the controller.
-    pid_t controller_pid;
-    FILE *pid_file = fopen("./src_controller.pid", "r");
-    assert(pid_file != NULL);
-    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
-    fclose(pid_file);
     assert(kill(controller_pid, SIGUSR1) == 0);
 
     migration_completion_end(s);
@@ -4019,13 +4024,11 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     qatomic_set(&s->atomic_switchover, false);
 
     int count = 0;
-    // int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 
     while (1) {
-        qemu_savevm_state_iterate_shm(s->to_dst_file);
-        // usleep(50000); // 50ms --> 1% degradation in cpu.
+        bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file);
         ++count;
-        if (qatomic_read(&s->atomic_switchover)) {
+        if (qatomic_read(&s->atomic_switchover) && flag) {
             // puts("asd123www: We should quit now!");
             break;
         }
@@ -4178,6 +4181,15 @@ process_incoming_migration_shm_co(void *opaque)
 
     // zezhou: seems we need this to resume the VM.
     migration_bh_schedule(process_incoming_migration_bh, mis);
+    
+    // Zezhou: finished loading all the memory blocks, now we can signal the controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid));
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
+
     return;
 }
 

@@ -3912,10 +3912,11 @@ int qemu_loadvm_state_shm(QEMUFile *f)
     return ret;
 }
 
+// Zezhou: return true if the # of dirty pages is small enough.
 int qemu_savevm_state_iterate_shm(QEMUFile *f)
 {
     SaveStateEntry *se;
-    bool all_finished = true;
+    bool flag = false;
     int ret;
 
     trace_savevm_state_iterate();
@@ -3935,14 +3936,7 @@ int qemu_savevm_state_iterate_shm(QEMUFile *f)
         // print the device name.
         ret = se->ops->save_live_iterate_shm(f, se->opaque);
 
-        if (ret < 0) {
-            error_report("failed to save SaveStateEntry with id(name): "
-                         "%d(%s): %d",
-                         se->section_id, se->idstr, ret);
-            return ret;
-        } else if (!ret) {
-            all_finished = false;
-        }
+        flag |= ret;
     }
-    return all_finished;
+    return flag;
 }
