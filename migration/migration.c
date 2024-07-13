@@ -722,6 +722,20 @@ static void process_incoming_migration_bh(void *opaque)
         runstate_set(global_state_get_runstate());
     }
     trace_vmstate_downtime_checkpoint("dst-precopy-bh-vm-started");
+
+    // Zezhou: vm has been restarted at dst, tell the dst controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
+
+    // Pre-copy migration, end post-copy immediately.
+    if (!migrate_postcopy_ram()) {
+        assert(kill(controller_pid, SIGUSR2) == 0);
+    }
+
     /*
      * This must happen after any state changes since as soon as an external
      * observer sees this event they might start to prod at the VM assuming
@@ -800,18 +814,6 @@ process_incoming_migration_co(void *opaque)
 
     migration_bh_schedule(process_incoming_migration_bh, mis);
 
-    // Zezhou: vm is about to restart at dst, tell the dst controller.
-    pid_t controller_pid;
-    FILE *pid_file = fopen("./dst_controller.pid", "r");
-    assert(pid_file != NULL);
-    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
-    fclose(pid_file);
-    assert(kill(controller_pid, SIGUSR1) == 0);
-
-    // Pre-copy migration, end post-copy immediately.
-    if (!migrate_postcopy_ram()) {
-        assert(kill(controller_pid, SIGUSR2) == 0);
-    }
     return;
 fail:
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
