@@ -750,6 +750,15 @@ static void process_incoming_migration_bh(void *opaque)
         runstate_set(global_state_get_runstate());
     }
     trace_vmstate_downtime_checkpoint("dst-precopy-bh-vm-started");
+
+    // Zezhou: finished loading all the memory blocks, now we can signal the controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid));
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
+
     /*
      * This must happen after any state changes since as soon as an external
      * observer sees this event they might start to prod at the VM assuming
@@ -4182,14 +4191,6 @@ process_incoming_migration_shm_co(void *opaque)
     // zezhou: seems we need this to resume the VM.
     migration_bh_schedule(process_incoming_migration_bh, mis);
     
-    // Zezhou: finished loading all the memory blocks, now we can signal the controller.
-    pid_t controller_pid;
-    FILE *pid_file = fopen("./dst_controller.pid", "r");
-    assert(pid_file != NULL);
-    assert(fscanf(pid_file, "%d", &controller_pid));
-    fclose(pid_file);
-    assert(kill(controller_pid, SIGUSR1) == 0);
-
     return;
 }
 
