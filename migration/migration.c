@@ -1344,6 +1344,7 @@ MigrationInfo *qmp_query_migrate(Error **errp)
     return info;
 }
 
+// Zezhou: start postcopy.
 void qmp_migrate_start_postcopy(Error **errp)
 {
     MigrationState *s = migrate_get_current();
@@ -2521,7 +2522,7 @@ static int postcopy_start(MigrationState *ms, Error **errp)
     int ret;
     QIOChannelBuffer *bioc;
     QEMUFile *fb;
-    uint64_t bandwidth = migrate_max_postcopy_bandwidth();
+    uint64_t bandwidth = migrate_max_postcopy_bandwidth(); // if we don't set, it's 0.
     bool restart_block = false;
     int cur_state = MIGRATION_STATUS_ACTIVE;
 
@@ -2539,6 +2540,15 @@ static int postcopy_start(MigrationState *ms, Error **errp)
     }
 
     trace_postcopy_start();
+
+    // Zezhou: post-copy starts, signal the src control.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./src_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
+
     bql_lock();
     trace_postcopy_start_set_run();
 

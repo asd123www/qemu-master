@@ -2065,6 +2065,15 @@ static void *postcopy_ram_listen_thread(void *opaque)
 
     migrate_set_state(&mis->state, MIGRATION_STATUS_POSTCOPY_ACTIVE,
                                    MIGRATION_STATUS_COMPLETED);
+    
+    // Zezhou: post-copy finishes, tell dst controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR2) == 0);
+
     /*
      * If everything has worked fine, then the main thread has waited
      * for us to start, and we're the last use of the mis.
@@ -2172,6 +2181,15 @@ static void loadvm_postcopy_handle_run_bh(void *opaque)
         /* leave it paused and let management decide when to start the CPU */
         runstate_set(RUN_STATE_PAUSED);
     }
+
+    assert(autostart);
+    // Zezhou: vm has been restarted at dst, tell the dst controller.
+    pid_t controller_pid;
+    FILE *pid_file = fopen("./dst_controller.pid", "r");
+    assert(pid_file != NULL);
+    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
+    fclose(pid_file);
+    assert(kill(controller_pid, SIGUSR1) == 0);
 
     trace_vmstate_downtime_checkpoint("dst-postcopy-bh-vm-started");
 }
@@ -2490,6 +2508,7 @@ static int loadvm_process_command(QEMUFile *f)
     case MIG_CMD_POSTCOPY_LISTEN:
         return loadvm_postcopy_handle_listen(mis);
 
+    // zezhou: postcopy logic is here.
     case MIG_CMD_POSTCOPY_RUN:
         return loadvm_postcopy_handle_run(mis);
 

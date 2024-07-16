@@ -668,14 +668,6 @@ int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)
 
     trace_postcopy_ram_incoming_cleanup_exit();
 
-    // Zezhou: post-copy finishes, tell dst controller.
-    pid_t controller_pid;
-    FILE *pid_file = fopen("./dst_controller.pid", "r");
-    assert(pid_file != NULL);
-    assert(fscanf(pid_file, "%d", &controller_pid) == 1);
-    fclose(pid_file);
-    assert(kill(controller_pid, SIGUSR2) == 0);
-
     return 0;
 }
 
