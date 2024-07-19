@@ -178,6 +178,30 @@ static void *mmap_reserve(size_t size, int fd)
     return mmap(0, size, PROT_NONE, flags, fd, 0);
 }
 
+int get_config_value(const char *key);
+int get_config_value(const char *key) {
+    FILE* file = fopen("./config.txt", "r");
+    if (file == NULL) {
+        puts("The file doesn't exist."); fflush(stdout);
+        exit(-1);
+    }
+    char line[255] = {0}, value[255] = {0};
+    char *endptr;
+    int num = -1;
+
+    while (fgets(line, 255, file)) {
+        if (strncmp(line, key, strlen(key)) == 0) {
+            strcpy(value, strchr(line, '=') + 1);
+            value[strcspn(value, "\n")] = 0;
+
+            num = strtol(value, &endptr, 10);
+            break;
+        }
+    }
+    fclose(file);
+    return num;
+}
+
 /*
  * Activate memory in a reserved region from the given fd (if any), to make
  * it accessible.
@@ -207,17 +231,30 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
 
     int shm_fd = shm_open("/my_shared_memory", O_RDWR, 0666);
     if (shm_fd == -1) {
+        // Don't have shm_obj, means the source VM.
         // QEMU's logic.
         activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
+        
+        int src_numa = get_config_value("SRC_NUMA");
+        assert(src_numa != -1);
+        unsigned long nodemask = 1 << src_numa;
+        if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
+            perror("mbind");
+            exit(EXIT_FAILURE);
+        }
     } else {
+        // Destination VM.
         // Zezhou: very hacky way...
+        int dst_numa = get_config_value("DST_NUMA");
+        int cxl_numa = get_config_value("CXL_NUMA");
+        assert(dst_numa != -1 && cxl_numa != -1);
         if (size < 3000000) {
             activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
             // Zezhou: add numa_node_binding.
             if (activated_ptr != MAP_FAILED) {
-                unsigned long nodemask = (1 << 1); // which numa node.
+                unsigned long nodemask = 1 << dst_numa;
                 if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
                     perror("mbind");
                     exit(EXIT_FAILURE);
@@ -230,6 +267,11 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
             void *shm_ptr = mmap(0, 10ll * 1024 * 1024 * 1024, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
             if (shm_ptr == MAP_FAILED) {
                 perror("mmap");
+                exit(EXIT_FAILURE);
+            }
+            unsigned long nodemask = 1 << cxl_numa;
+            if (mbind(shm_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
+                perror("mbind");
                 exit(EXIT_FAILURE);
             }
 

@@ -865,6 +865,7 @@ void hmp_migrate(Monitor *mon, const QDict *qdict)
     }
 }
 
+extern int get_config_value(const char *key);
 
 /* Zezhou: shm_migrate.
  */ 
@@ -892,9 +893,11 @@ void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
     if (shm_ptr == MAP_FAILED) {
         perror("mmap");
         exit(EXIT_FAILURE);
-    }    
-    
-    unsigned long nodemask = 1 << 1; // numa_node_binding.
+    }
+
+    int cxl_numa = get_config_value("CXL_NUMA");
+    assert(cxl_numa != -1);
+    unsigned long nodemask = 1 << cxl_numa; // numa_node_binding.
     if (mbind(shm_ptr, shm_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0) != 0) {
         perror("mbind");
         exit(-1);
