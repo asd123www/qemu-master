@@ -3431,6 +3431,7 @@ out:
  */
 static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
 {
+    static bool first_time = true;
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
@@ -3461,6 +3462,12 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
                     if (bit >= nbits) break;
                     assert(test_and_clear_bit(bit, block->bmap));
                     ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
+
+                    // zero page & first time.
+                    if (first_time && buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+                        continue;
+                    }
+
                     memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, 
                             block->host + offset, TARGET_PAGE_SIZE);
                     ++bit;
@@ -3469,6 +3476,8 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
             }
         }
     }
+
+    first_time = false;
 
     if (count < 10000) return 1;
 
