@@ -3579,6 +3579,7 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
  */
 static int ram_save_complete_shm(QEMUFile *f, void *opaque)
 {
+    uint64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
@@ -3612,6 +3613,7 @@ static int ram_save_complete_shm(QEMUFile *f, void *opaque)
         }
     }
 
+    printf("Last iteration time: %ld us\n", qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time);
     printf("final rount copy pages: %d\n", count);fflush(stdout);
 
     /* 
