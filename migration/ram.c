@@ -3321,6 +3321,7 @@ out:
  */
 static int ram_save_complete(QEMUFile *f, void *opaque)
 {
+    uint64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME); // last iteration time.
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     int ret = 0;
@@ -3388,6 +3389,7 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
         qemu_put_be64(f, RAM_SAVE_FLAG_MULTIFD_FLUSH);
     }
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
+    printf("\nLast iteration time: %lu us\n", qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time);fflush(stdout);
     return qemu_fflush(f);
 }
 
