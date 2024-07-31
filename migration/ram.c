@@ -68,6 +68,7 @@
 
 #if defined(__linux__)
 #include "qemu/userfaultfd.h"
+#include <numaif.h>
 #endif /* defined(__linux__) */
 
 /***********************************************************/
@@ -4669,6 +4670,58 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
+#define MAX_PAGES 100
+static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
+static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
+{
+    RAMBlock *block;
+    /* enumerate all memory blocks. */
+    RAMBLOCK_FOREACH_MIGRATABLE(block) {
+        // small memory chunks have been copied to local.
+        if (block->used_length <= 50000000) continue;
+
+        // promote pages in this block.
+        void *pages[MAX_PAGES];
+        int numa_nodes[MAX_PAGES] = {0};
+        int status[MAX_PAGES];
+        int num = 0;
+        int succeeded = 0;
+        int cnt = 0;
+
+        printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
+        for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
+            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+
+            // if (buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+            //     continue;
+            // }
+
+            pages[cnt++] = block->host + offset;
+            if (cnt == MAX_PAGES || i == (block->used_length >> TARGET_PAGE_BITS) - 1) {
+                if (move_pages(0, cnt, pages, numa_nodes, status, 0) == -1) {
+                    puts("move_pages");fflush(stdout);
+                    exit(-1);
+                }
+                for (int j = 0; j < cnt; ++j) {
+                    // printf("%ld\n", ((uint8_t *)pages[j] - block->host) >> TARGET_PAGE_BITS);fflush(stdout);
+                    // // Check the status of the move
+                    // if (status[j] == -EACCES)
+                    //     printf("Page access denied\n");
+                    // else if (status[j] < 0)
+                    //     printf("Error: %s\n", strerror(-status[j]));
+                    // else
+                    //     printf("Page successfully moved to node %d\n", status[j]);
+                    succeeded += status[j] >= 0;
+                }
+                cnt = 0;
+            }
+            ++num;
+        }
+
+        printf("asd123www: promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
+    }
+}
+
 static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, void *shm_obj)
 {
     int ret = 0;
@@ -4711,12 +4764,17 @@ static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, void *shm_obj
                 tmp += block->used_length;
 
                 // we directly map those pages into ramblock->host.
-                if (block->used_length > 1000000) continue;
+                if (block->used_length > 50000000) continue;
 
                 // load pages in this block.
-                void *host = host_from_ram_block_offset(block, 0);
-                memcpy(host, ((shm_target *)shm_obj)->ram + block->pages_offset_shm, block->used_length);
-                // block->host=shm_obj->ram + block->pages_offset_shm;
+                uint8_t *shm_ptr = ((shm_target *)shm_obj)->ram + block->pages_offset_shm;
+                for (int i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
+                    ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+                    if (buffer_is_zero(shm_ptr + offset, TARGET_PAGE_SIZE)) {
+                        continue;
+                    }
+                    memcpy(block->host + offset, shm_ptr + offset, TARGET_PAGE_SIZE);
+                }
             }
         }
     }
@@ -4884,6 +4942,7 @@ void postcopy_preempt_shutdown_file(MigrationState *s)
 static SaveVMHandlers savevm_ram_handlers = {
     .save_setup_shm = ram_save_setup_shm, // shared memory setup handler.
     .load_state_shm = ram_load_shm,
+    .load_state_promote_pages_shm = ram_promote_pages_shm,
     .save_live_iterate_shm = ram_save_iterate_shm, // shared memory iterate handler.
     .save_live_complete_precopy_shm = ram_save_complete_shm,
 

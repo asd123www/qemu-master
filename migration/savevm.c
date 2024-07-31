@@ -3940,3 +3940,18 @@ int qemu_savevm_state_iterate_shm(QEMUFile *f)
     }
     return flag;
 }
+
+// Zezhou: promote pages into local numa node.
+void qemu_loadvm_promote_pages(QEMUFile *f)
+{
+    SaveStateEntry *se;
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (strcmp(se->idstr, "ram") == 0) {
+            break;
+        }
+    }
+    assert(se != NULL && se->section_id == 0x02);
+    assert(se->vmsd == NULL);
+    se->ops->load_state_promote_pages_shm(NULL, NULL);
+
+}

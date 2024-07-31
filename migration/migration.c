@@ -698,6 +698,14 @@ static void qemu_start_incoming_migration(const char *uri, bool has_channels,
     }
 }
 
+static void* shm_promote_pages_bh(void *opaque)
+{
+    // Zezhou: start page promotion logic.
+    printf("Hello world from shm_promote_pages_bh!\n");fflush(stdout);
+    qemu_loadvm_promote_pages(NULL);
+    return NULL;
+}
+
 static void process_incoming_migration_bh(void *opaque)
 {
     Error *local_err = NULL;
@@ -767,6 +775,12 @@ static void process_incoming_migration_bh(void *opaque)
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
                       MIGRATION_STATUS_COMPLETED);
     migration_incoming_state_destroy();
+
+    // Zezhou: start page promotion logic.
+    QemuThread thread;
+    qemu_thread_create(&thread, "page_promotion",
+                        shm_promote_pages_bh, NULL, QEMU_THREAD_JOINABLE);
+
 }
 
 static void coroutine_fn

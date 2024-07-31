@@ -249,7 +249,7 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         int dst_numa = get_config_value("DST_NUMA");
         int cxl_numa = get_config_value("CXL_NUMA");
         assert(dst_numa != -1 && cxl_numa != -1);
-        if (size < 3000000) {
+        if (size < 50000000) {
             activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
             // Zezhou: add numa_node_binding.
