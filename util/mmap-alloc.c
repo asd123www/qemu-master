@@ -269,11 +269,11 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
                 perror("mmap");
                 exit(EXIT_FAILURE);
             }
-            unsigned long nodemask = 1 << cxl_numa;
-            if (mbind(shm_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
-                perror("mbind");
-                exit(EXIT_FAILURE);
-            }
+            // unsigned long nodemask = 1 << cxl_numa;
+            // if (mbind(shm_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
+            //     perror("mbind");
+            //     exit(EXIT_FAILURE);
+            // }
 
             activated_ptr = (char *)shm_ptr + 1048576 + prefix_len;
             prefix_len += size;

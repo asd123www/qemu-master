@@ -69,6 +69,7 @@
 #if defined(__linux__)
 #include "qemu/userfaultfd.h"
 #include <numaif.h>
+#include <numa.h>
 #endif /* defined(__linux__) */
 
 /***********************************************************/
@@ -4670,7 +4671,8 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
-#define MAX_PAGES 100
+#define MAX_PAGES 32
+extern int get_config_value(const char *key);
 static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
 static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
 {
@@ -4679,6 +4681,28 @@ static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
     RAMBLOCK_FOREACH_MIGRATABLE(block) {
         // small memory chunks have been copied to local.
         if (block->used_length <= 50000000) continue;
+
+        // all future pages will be allocated on the target node.
+        int dst_numa = get_config_value("DST_NUMA");
+        assert(dst_numa >= 0);
+        printf("dst_numa: %d\n", dst_numa);
+        unsigned long nodemask = 1 << dst_numa;
+        if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, 0) != 0) {
+            perror("mbind");
+            exit(EXIT_FAILURE);
+        }
+
+        // struct bitmask *from_nodes = numa_allocate_nodemask();
+        // struct bitmask *to_nodes = numa_allocate_nodemask();
+
+        // // Set the bitmask for the source node (node 1) and the destination node (node 0)
+        // numa_bitmask_setbit(from_nodes, 1);
+        // numa_bitmask_setbit(from_nodes, 0);
+        // numa_bitmask_setbit(to_nodes, 0);
+
+        // int ret = numa_migrate_pages(0, from_nodes, to_nodes);
+        // assert(ret >= 0);
+        // break;
 
         // promote pages in this block.
         void *pages[MAX_PAGES];
@@ -4689,14 +4713,15 @@ static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
         int cnt = 0;
 
         printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
+
         for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
 
-            // if (buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
-            //     continue;
-            // }
+            if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+                pages[cnt++] = block->host + offset;
+                ++num;
+            }
 
-            pages[cnt++] = block->host + offset;
             if (cnt == MAX_PAGES || i == (block->used_length >> TARGET_PAGE_BITS) - 1) {
                 if (move_pages(0, cnt, pages, numa_nodes, status, 0) == -1) {
                     puts("move_pages");fflush(stdout);
@@ -4709,16 +4734,27 @@ static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
                     //     printf("Page access denied\n");
                     // else if (status[j] < 0)
                     //     printf("Error: %s\n", strerror(-status[j]));
+                    // if (status[j] < 0)
+                    // printf("Error: %d\n", status[j]);
                     // else
                     //     printf("Page successfully moved to node %d\n", status[j]);
                     succeeded += status[j] >= 0;
                 }
+
+                // if (move_pages(0, cnt, pages, NULL, status, 0) == -1) {
+                //     puts("move_pages");fflush(stdout);
+                //     exit(-1);
+                // }
+                // for (int j = 0; j < cnt; ++j) {
+                //     if (status[j] < 0) continue;
+                //     printf("numa node location: %d\n", status[j]);
+                // }
+
                 cnt = 0;
             }
-            ++num;
         }
 
-        printf("asd123www: promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
+        printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
     }
 }
 

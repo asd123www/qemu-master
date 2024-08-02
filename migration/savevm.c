@@ -3952,6 +3952,9 @@ void qemu_loadvm_promote_pages(QEMUFile *f)
     }
     assert(se != NULL && se->section_id == 0x02);
     assert(se->vmsd == NULL);
+
+    int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
     se->ops->load_state_promote_pages_shm(NULL, NULL);
+    printf("Elapsed time: %ld ns\n", qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - start_time);
 
 }
