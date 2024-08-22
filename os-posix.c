@@ -39,6 +39,10 @@
 #include <sys/prctl.h>
 #endif
 
+static void segv_handler(int signal, siginfo_t *info, void *c)
+{
+    return;
+}
 
 void os_setup_early_signal_handling(void)
 {
@@ -47,6 +51,14 @@ void os_setup_early_signal_handling(void)
     act.sa_flags = 0;
     act.sa_handler = SIG_IGN;
     sigaction(SIGPIPE, &act, NULL);
+
+    act.sa_flags = SA_SIGINFO;
+    sigemptyset(&act.sa_mask);
+    act.sa_sigaction = segv_handler;
+    if (sigaction(SIGSEGV, &act, NULL) != 0) {
+        printf("sigaction SIGSEGV failed\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 static void termsig_handler(int signal, siginfo_t *info, void *c)

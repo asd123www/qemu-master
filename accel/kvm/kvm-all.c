@@ -2877,6 +2877,11 @@ int kvm_cpu_exec(CPUState *cpu)
 #endif
 
         if (run_ret < 0) {
+            if (run_ret == -EFAULT) {
+                /* hack for thymesisflow page moving */
+                // puts("???");fflush(stdout);
+                run_ret = -EAGAIN;
+            }
             if (run_ret == -EINTR || run_ret == -EAGAIN) {
                 trace_kvm_io_window_exit();
                 kvm_eat_signals(cpu);

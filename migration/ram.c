@@ -4671,91 +4671,292 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
-#define MAX_PAGES 32
-extern int get_config_value(const char *key);
-static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
-static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
+// #define MAX_PAGES 32
+// extern int get_config_value(const char *key);
+// static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
+// static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
+// {
+//     RAMBlock *block;
+//     /* enumerate all memory blocks. */
+//     RAMBLOCK_FOREACH_MIGRATABLE(block) {
+//         // small memory chunks have been copied to local.
+//         if (block->used_length <= 50000000) continue;
+
+//         // all future pages will be allocated on the target node.
+//         int dst_numa = get_config_value("DST_NUMA");
+//         assert(dst_numa >= 0);
+//         printf("dst_numa: %d\n", dst_numa);
+//         unsigned long nodemask = 1 << dst_numa;
+//         if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, 0) != 0) {
+//             perror("mbind");
+//             exit(EXIT_FAILURE);
+//         }
+
+//         // struct bitmask *from_nodes = numa_allocate_nodemask();
+//         // struct bitmask *to_nodes = numa_allocate_nodemask();
+
+//         // // Set the bitmask for the source node (node 1) and the destination node (node 0)
+//         // numa_bitmask_setbit(from_nodes, 1);
+//         // numa_bitmask_setbit(from_nodes, 0);
+//         // numa_bitmask_setbit(to_nodes, 0);
+
+//         // int ret = numa_migrate_pages(0, from_nodes, to_nodes);
+//         // assert(ret >= 0);
+//         // break;
+
+//         // promote pages in this block.
+//         void *pages[MAX_PAGES];
+//         int numa_nodes[MAX_PAGES] = {0};
+//         int status[MAX_PAGES];
+//         int num = 0;
+//         int succeeded = 0;
+//         int cnt = 0;
+
+//         printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
+
+//         for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
+//             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+
+//             if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+//                 pages[cnt++] = block->host + offset;
+//                 ++num;
+//             }
+
+//             if (cnt == MAX_PAGES || i == (block->used_length >> TARGET_PAGE_BITS) - 1) {
+//                 if (move_pages(0, cnt, pages, numa_nodes, status, 0) == -1) {
+//                     puts("move_pages");fflush(stdout);
+//                     exit(-1);
+//                 }
+//                 for (int j = 0; j < cnt; ++j) {
+//                     // printf("%ld\n", ((uint8_t *)pages[j] - block->host) >> TARGET_PAGE_BITS);fflush(stdout);
+//                     // // Check the status of the move
+//                     // if (status[j] == -EACCES)
+//                     //     printf("Page access denied\n");
+//                     // else if (status[j] < 0)
+//                     //     printf("Error: %s\n", strerror(-status[j]));
+//                     // if (status[j] < 0)
+//                     // printf("Error: %d\n", status[j]);
+//                     // else
+//                     //     printf("Page successfully moved to node %d\n", status[j]);
+//                     succeeded += status[j] >= 0;
+//                 }
+
+//                 // if (move_pages(0, cnt, pages, NULL, status, 0) == -1) {
+//                 //     puts("move_pages");fflush(stdout);
+//                 //     exit(-1);
+//                 // }
+//                 // for (int j = 0; j < cnt; ++j) {
+//                 //     if (status[j] < 0) continue;
+//                 //     printf("numa node location: %d\n", status[j]);
+//                 // }
+
+//                 cnt = 0;
+//             }
+//         }
+
+//         printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
+//     }
+// }
+
+#define MAX_COPY_THREADS 8
+pthread_t copy_threads[MAX_COPY_THREADS];
+struct pmemcpy {
+  pthread_mutex_t lock;
+  pthread_barrier_t barrier;
+  _Atomic bool write_zeros;
+  _Atomic void *dst;
+  _Atomic void *src;
+  _Atomic size_t length;
+};
+static struct pmemcpy pmemcpy;
+
+void *hemem_parallel_memcpy_thread(void *arg);
+void *hemem_parallel_memcpy_thread(void *arg)
 {
-    RAMBlock *block;
-    /* enumerate all memory blocks. */
-    RAMBLOCK_FOREACH_MIGRATABLE(block) {
-        // small memory chunks have been copied to local.
-        if (block->used_length <= 50000000) continue;
+  uint64_t tid = (uint64_t)arg;
+  void *src;
+  void *dst;
+  size_t length;
+  size_t chunk_size;
 
-        // all future pages will be allocated on the target node.
-        int dst_numa = get_config_value("DST_NUMA");
-        assert(dst_numa >= 0);
-        printf("dst_numa: %d\n", dst_numa);
-        unsigned long nodemask = 1 << dst_numa;
-        if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, 0) != 0) {
-            perror("mbind");
-            exit(EXIT_FAILURE);
-        }
+  assert(tid < MAX_COPY_THREADS);
 
-        // struct bitmask *from_nodes = numa_allocate_nodemask();
-        // struct bitmask *to_nodes = numa_allocate_nodemask();
+  for (;;) {
+    /* while(!pmemcpy.activate || pmemcpy.done_bitmap[tid]) { } */
+    int r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    // if (tid == 0) {
+    //   memcpys++;
+    // }
 
-        // // Set the bitmask for the source node (node 1) and the destination node (node 0)
-        // numa_bitmask_setbit(from_nodes, 1);
-        // numa_bitmask_setbit(from_nodes, 0);
-        // numa_bitmask_setbit(to_nodes, 0);
-
-        // int ret = numa_migrate_pages(0, from_nodes, to_nodes);
-        // assert(ret >= 0);
-        // break;
-
-        // promote pages in this block.
-        void *pages[MAX_PAGES];
-        int numa_nodes[MAX_PAGES] = {0};
-        int status[MAX_PAGES];
-        int num = 0;
-        int succeeded = 0;
-        int cnt = 0;
-
-        printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
-
-        for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
-            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
-
-            if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
-                pages[cnt++] = block->host + offset;
-                ++num;
-            }
-
-            if (cnt == MAX_PAGES || i == (block->used_length >> TARGET_PAGE_BITS) - 1) {
-                if (move_pages(0, cnt, pages, numa_nodes, status, 0) == -1) {
-                    puts("move_pages");fflush(stdout);
-                    exit(-1);
-                }
-                for (int j = 0; j < cnt; ++j) {
-                    // printf("%ld\n", ((uint8_t *)pages[j] - block->host) >> TARGET_PAGE_BITS);fflush(stdout);
-                    // // Check the status of the move
-                    // if (status[j] == -EACCES)
-                    //     printf("Page access denied\n");
-                    // else if (status[j] < 0)
-                    //     printf("Error: %s\n", strerror(-status[j]));
-                    // if (status[j] < 0)
-                    // printf("Error: %d\n", status[j]);
-                    // else
-                    //     printf("Page successfully moved to node %d\n", status[j]);
-                    succeeded += status[j] >= 0;
-                }
-
-                // if (move_pages(0, cnt, pages, NULL, status, 0) == -1) {
-                //     puts("move_pages");fflush(stdout);
-                //     exit(-1);
-                // }
-                // for (int j = 0; j < cnt; ++j) {
-                //     if (status[j] < 0) continue;
-                //     printf("numa node location: %d\n", status[j]);
-                // }
-
-                cnt = 0;
-            }
-        }
-
-        printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
+    // grab data out of shared struct
+    length = pmemcpy.length;
+    chunk_size = length / MAX_COPY_THREADS;
+    dst = pmemcpy.dst + (tid * chunk_size);
+    if (!pmemcpy.write_zeros) {
+      src = pmemcpy.src + (tid * chunk_size);
+      memcpy(dst, src, chunk_size);
     }
+    else {
+      memset(dst, 0, chunk_size);
+    }
+
+    r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    /* pmemcpy.done_bitmap[tid] = true; */
+  }
+  return NULL;
+}
+
+// static void hemem_parallel_memset(void* addr, int c, size_t n)
+// {
+//   pthread_mutex_lock(&(pmemcpy.lock));
+//   pmemcpy.dst = addr;
+//   pmemcpy.length = n;
+//   pmemcpy.write_zeros = true;
+
+//   int r = pthread_barrier_wait(&pmemcpy.barrier);
+//   assert(r ==0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+//   r = pthread_barrier_wait(&pmemcpy.barrier);
+//   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+//   pthread_mutex_unlock(&(pmemcpy.lock));
+// }
+
+static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
+{
+  /* uint64_t i; */
+  /* bool all_threads_done; */
+  pthread_mutex_lock(&(pmemcpy.lock));
+  pmemcpy.dst = dst;
+  pmemcpy.src = src;
+  pmemcpy.length = length;
+  pmemcpy.write_zeros = false;
+
+  int r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+  //LOG("parallel migration started\n");
+  
+  /* pmemcpy.activate = true; */
+
+  /* while (!all_threads_done) { */
+  /*   all_threads_done = true; */
+  /*   for (i = 0; i < MAX_COPY_THREADS; i++) { */
+  /*     if (!pmemcpy.done_bitmap[i]) { */
+  /*       all_threads_done = false; */
+  /*       break; */
+  /*     } */
+  /*   } */
+  /* } */
+
+  r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  //LOG("parallel migration finished\n");
+  pthread_mutex_unlock(&(pmemcpy.lock));
+
+  /* pmemcpy.activate = false; */
+
+  /* for (i = 0; i < MAX_COPY_THREADS; i++) { */
+  /*   pmemcpy.done_bitmap[i] = false; */
+  /* } */
+}
+
+
+/* Moving pages from the Thymesisflow device will temporarily map them as read-only. This may
+ * cause otherwise fatal failures like SIGSEGV. The following function should be used by the
+ * respective handlers to check if the failure may be caused by the page moving. */
+#define RAM_DISAGGREGATED_NOT_MOVING 1
+#define RAM_DISAGGREGATED_CURRENTLY_MOVING 2
+#define RAM_DISAGGREGATED_WAS_MOVED 3
+int ram_disaggregated_moving_state = RAM_DISAGGREGATED_NOT_MOVING;
+
+static void *disaggregated_ram_move_thread(void *unused) {
+    RAMBlock *block;
+    size_t move_size = getpagesize() * 32;
+    size_t moved_blocks = 0;
+
+    __atomic_store_n(&ram_disaggregated_moving_state,
+                     RAM_DISAGGREGATED_CURRENTLY_MOVING,
+                     __ATOMIC_SEQ_CST);
+
+    RAMBLOCK_FOREACH_MIGRATABLE(block) {
+        if (block->used_length <= 50000000) continue;
+        
+        int local_fd = memfd_create("locally moved VM RAM", 0);
+        if (local_fd < 0) {
+            printf("memfd_create failed\n");
+            exit(1);
+        }
+
+        int result = ftruncate(local_fd, block->used_length);
+        if (result != 0) {
+            printf("ftruncate failed for local RAM\n");
+            exit(1);
+        }
+        printf("moving RAM block of size %lu from thymesisflow\n",block->used_length);
+
+        char *temp_map = mmap(NULL,
+                              block->used_length,
+                              PROT_READ|PROT_WRITE,
+                              MAP_SHARED,
+                              local_fd,
+                              0);
+        if (temp_map == MAP_FAILED) {
+            printf("temp mmap failed\n");
+            exit(1);
+        }
+        for (size_t offset = 0; offset < block->used_length; offset += move_size) {
+            // print offset to make sure we are moving the right block
+            result = mprotect(block->host + offset, move_size, PROT_READ);
+            if (result != 0) {
+                printf("mprotect failed\n");
+                exit(1);
+            }
+
+            hemem_parallel_memcpy(temp_map + offset, block->host + offset, move_size);
+
+            char *fixed_map = mmap(block->host + offset,
+                                   move_size,
+                                   PROT_READ|PROT_WRITE,
+                                   MAP_SHARED|MAP_FIXED,
+                                   local_fd,
+                                   offset);
+            if (fixed_map == MAP_FAILED) {
+                printf("fixed mmap failed\n");
+                exit(1);
+            }
+            result = mprotect(block->host + offset, move_size, PROT_READ|PROT_WRITE);
+            if (result != 0) {
+                printf("mprotect failed\n");
+                exit(1);
+            }
+        }
+        moved_blocks++;
+        if (munmap(temp_map, block->used_length) != 0) {
+            printf("munmap failed\n");
+            exit(1);
+        }
+    }
+
+    __atomic_store_n(&ram_disaggregated_moving_state,
+                     RAM_DISAGGREGATED_WAS_MOVED,
+                     __ATOMIC_SEQ_CST);
+    
+    printf("Disaggregated Zero-Copy Migration completed.\n"); fflush(stdout);
+
+    return NULL;
+}
+
+static void ram_load_disaggregated(QEMUFile *f, void *opaque) {
+    assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
+    assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
+    for (int i = 0; i < MAX_COPY_THREADS; i++) {
+        assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
+    }
+
+    disaggregated_ram_move_thread(NULL);
 }
 
 static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, void *shm_obj)
@@ -4978,7 +5179,7 @@ void postcopy_preempt_shutdown_file(MigrationState *s)
 static SaveVMHandlers savevm_ram_handlers = {
     .save_setup_shm = ram_save_setup_shm, // shared memory setup handler.
     .load_state_shm = ram_load_shm,
-    .load_state_promote_pages_shm = ram_promote_pages_shm,
+    .load_state_promote_pages_shm = ram_load_disaggregated,
     .save_live_iterate_shm = ram_save_iterate_shm, // shared memory iterate handler.
     .save_live_complete_precopy_shm = ram_save_complete_shm,
 
