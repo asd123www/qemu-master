@@ -873,6 +873,7 @@ void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
 {
     const char *shm_name = qdict_get_str(qdict, "uri"); // path to shared memory.
     uint64_t shm_size = qdict_get_int(qdict, "value"); // memory size, GB.
+    uint64_t duration = qdict_get_int(qdict, "duration"); // target iteration duration in us.
     shm_size *= 1024ll * 1024 * 1024;
 
     Error *err = NULL;
@@ -905,7 +906,7 @@ void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
     }
 
     // migrate via shared memory.
-    qmp_shm_migrate(shm_ptr, shm_size, &err);
+    qmp_shm_migrate(shm_ptr, shm_size, duration, &err);
 
     if (err) {
         printf("hmp_shm_migrate: something wrong happened.");fflush(stdout);

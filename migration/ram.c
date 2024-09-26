@@ -3431,13 +3431,15 @@ out:
  * @f: QEMUFile where to send the data
  * @opaque: RAMState pointer
  */
-static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
+static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 {
     static bool first_time = true;
+    static double page_per_us = 0.001; // always start the next iteration immediately.
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
 
+    int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     // synchronize the dirty bitmap for each block.
     assert(migration_in_postcopy() == false);
     bql_lock();
@@ -3446,7 +3448,23 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
     }
     bql_unlock();
 
-    int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+    if (!switchover) {
+        // calculate the total # of dirty pages.
+        uint32_t dirty_num = 0;
+        WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
+            WITH_RCU_READ_LOCK_GUARD() {
+                RAMBlock *block;
+                RAMBLOCK_FOREACH_MIGRATABLE(block) {
+                    dirty_num += bitmap_count_one(block->bmap, block->used_length >> TARGET_PAGE_BITS);
+                }
+            }
+        }
+        double estimated_time_us = dirty_num / page_per_us;
+        if (estimated_time_us + 1000 < pss->shm_obj->duration) {
+            usleep((int)(pss->shm_obj->duration - estimated_time_us)); // query bitmap at most every 1ms.
+            return 0;
+        }
+    }
 
     int count = 0;
     WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
@@ -3479,12 +3497,21 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque)
         }
     }
 
+    int64_t duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
+    printf("iteration time: %ld us\n", duration);
+    if (!first_time) {
+        page_per_us = count * 1.0 / duration;
+        printf("throughput: %.4f(page/us)\n\n", page_per_us);
+    } else {
+        puts("");
+    }
+
+    // < 50ms then switch to the final round.
+    if (switchover && duration < 50000) {
+        return 1;
+    }
+
     first_time = false;
-
-    if (count < 10000) return 1;
-
-    printf("\n asd123www: %d pages are dirty.\n", count);
-    printf("iteration time: %ld us\n", qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time);
     return 0;
 }
 

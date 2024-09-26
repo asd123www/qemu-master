@@ -194,7 +194,7 @@ typedef struct SaveVMHandlers {
      * 
      * Zezhou: shared memory version of `save_live_iterate`.
      */
-    int (*save_live_iterate_shm)(QEMUFile *f, void *opaque);
+    int (*save_live_iterate_shm)(QEMUFile *f, void *opaque, bool switchover);
 
     void (*load_state_promote_pages_shm)(QEMUFile *f, void *opaque);
 

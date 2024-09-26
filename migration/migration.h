@@ -80,6 +80,7 @@ struct shm_target {
     uint8_t *shm_ptr;
     uint64_t shm_size;
     uint64_t shm_offset;
+    uint64_t duration; // target iteration duration in us.
     uint8_t *ram;
 };
 typedef struct shm_target shm_target;
@@ -494,7 +495,7 @@ struct MigrationState {
 
 // Zezhou's shm.
 void qmp_shm_migrate_switchover(void);
-void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, Error **errp);
+void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, uint64_t duration, Error **errp);
 void qmp_migrate_incoming_shm(void *shm_ptr, uint64_t shm_size, Error **errp);
 
 

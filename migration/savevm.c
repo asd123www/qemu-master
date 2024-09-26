@@ -3913,7 +3913,7 @@ int qemu_loadvm_state_shm(QEMUFile *f)
 }
 
 // Zezhou: return true if the # of dirty pages is small enough.
-int qemu_savevm_state_iterate_shm(QEMUFile *f)
+int qemu_savevm_state_iterate_shm(QEMUFile *f, bool switchover)
 {
     SaveStateEntry *se;
     bool flag = false;
@@ -3934,7 +3934,7 @@ int qemu_savevm_state_iterate_shm(QEMUFile *f)
         }
         
         // print the device name.
-        ret = se->ops->save_live_iterate_shm(f, se->opaque);
+        ret = se->ops->save_live_iterate_shm(f, se->opaque, switchover);
 
         flag |= ret;
     }

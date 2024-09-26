@@ -1042,9 +1042,9 @@ ERST
 
     {
         .name       = "shm_migrate",
-        .args_type  = "uri:s,value:i",
-        .params     = "uri value",
-        .help       = "Start pre-copy, writing pages into shared memory, path & memory size GB",
+        .args_type  = "uri:s,value:i,duration:i",
+        .params     = "uri value duration",
+        .help       = "Start pre-copy, writing pages into shared memory, path & memory size GB & target iteration duration",
         .cmd        = hmp_shm_migrate,
     },
 

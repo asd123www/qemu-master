@@ -4049,12 +4049,10 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     int count = 0;
 
     while (1) {
-        bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file);
+        // bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, qatomic_read(&s->atomic_switchover));
+        bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, false);
         ++count;
-        if (qatomic_read(&s->atomic_switchover) && flag) {
-            // puts("asd123www: We should quit now!");
-            break;
-        }
+        if (qatomic_read(&s->atomic_switchover) && flag) break;
     }
 
     printf("\nshm_iterations: %d\n", count);fflush(stdout);
@@ -4115,20 +4113,21 @@ out: // clean
 }
 
 /* shm_obj initialization */
-void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size);
-void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size) 
+void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size, uint64_t duration);
+void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size, uint64_t duration) 
 {
     /* shm_obj initialization */
     shm_obj->shm_offset = 0;
     shm_obj->shm_ptr = shm_ptr;
     shm_obj->shm_size = shm_size;
+    shm_obj->duration = duration;
     shm_obj->ram = shm_ptr + SHM_MIGRATION_QUEUE_SIZE;
 }
 
 /* Zezhou: shared memory migration.
  * 
  */
-void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, Error **errp) 
+void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, uint64_t duration, Error **errp) 
 {
     Error *local_err = NULL;
     // uint64_t rate_limit;
@@ -4144,7 +4143,7 @@ void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, Error **errp)
     // actually I don't know what is this.
     migrate_error_free(s);
 
-    shm_init(&s->shm_obj, shm_ptr, shm_size);
+    shm_init(&s->shm_obj, shm_ptr, shm_size, duration);
 
     s->expected_downtime = migrate_downtime_limit();
 
@@ -4230,7 +4229,7 @@ void qmp_migrate_incoming_shm(void *shm_ptr, uint64_t shm_size, Error **errp)
         return;
     }
 
-    shm_init(&mis->shm_obj, shm_ptr, shm_size);
+    shm_init(&mis->shm_obj, shm_ptr, shm_size, -1);
     //calculate how long this piece of code executes.
 
     // load queue data into file.
