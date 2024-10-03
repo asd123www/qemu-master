@@ -3434,47 +3434,36 @@ out:
 static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 {
     static bool first_time = true;
-    static double page_per_us = 0.001; // always start the next iteration immediately.
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
-
-    int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-    // synchronize the dirty bitmap for each block.
     assert(migration_in_postcopy() == false);
+
+    /* zezhou: only sync bitmap from kvm doesn't hurt voltdb-vm's performance(43.0k vs 42.8k).
+     *         And the latency is ~680us(each iteration) in r650 cloudlab machine.
+     *         Property: constant latency(compared with memcpy) & little overhead(state < 1 MB).
+     */
     bql_lock();
     WITH_RCU_READ_LOCK_GUARD() {
         migration_bitmap_sync_precopy(rs, false);
     }
     bql_unlock();
 
-    if (!switchover) {
-        // calculate the total # of dirty pages.
-        uint32_t dirty_num = 0;
-        WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
-            WITH_RCU_READ_LOCK_GUARD() {
-                RAMBlock *block;
-                RAMBLOCK_FOREACH_MIGRATABLE(block) {
-                    dirty_num += bitmap_count_one(block->bmap, block->used_length >> TARGET_PAGE_BITS);
-                }
-            }
-        }
-        double estimated_time_us = dirty_num / page_per_us;
-        if (estimated_time_us + 1000 < pss->shm_obj->duration) {
-            usleep((int)(pss->shm_obj->duration - estimated_time_us)); // query bitmap at most every 1ms.
-            return 0;
-        }
-    }
-
     int count = 0;
+    int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
         WITH_RCU_READ_LOCK_GUARD() {
             /* enumerate all memory blocks. */
             RAMBlock *block;
             RAMBLOCK_FOREACH_MIGRATABLE(block) {
                 assert(block->bmap != NULL);
+
+                /* zezhou: clear dirty bit in EPT & flush TLB, hurts voltdb-VM's performance a lot(43.0k vs 29.3k).
+                 *         the latency is in [500, 1000]us(each iteration) in r650 cloudlab machine, depends on the # of dirty pages.
+                 *         Property: constant latency(compared with memcpy) & huge overhead.
+                 */
                 memory_region_clear_dirty_bitmap(block->mr, 0, block->used_length);
-                // enumerate all pages inside the block and check if the dirty bit is true.
+
                 unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
                 unsigned long bit = 0;
                 while (1) {
@@ -3488,6 +3477,11 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                         continue;
                     }
 
+                    /* zezhou: memory copying has certain overheads.
+                     *         Experiment: copying all pages without clearing, so the dirty set is growing monotonically.
+                     *         voltdb-VM: (43.0k vs [40.8k, 41.6k]).
+                     *              LLC & memory bandwidth inteference.
+                     */
                     memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, 
                             block->host + offset, TARGET_PAGE_SIZE);
                     ++bit;
@@ -3499,12 +3493,6 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 
     int64_t duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
     printf("iteration time: %ld us\n", duration);
-    if (!first_time) {
-        page_per_us = count * 1.0 / duration;
-        printf("throughput: %.4f(page/us)\n\n", page_per_us);
-    } else {
-        puts("");
-    }
 
     // < 50ms then switch to the final round.
     if (switchover && duration < 50000) {

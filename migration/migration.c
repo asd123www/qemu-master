@@ -4047,12 +4047,17 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     qatomic_set(&s->atomic_switchover, false);
 
     int count = 0;
-
     while (1) {
-        // bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, qatomic_read(&s->atomic_switchover));
-        bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, false);
+        bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, qatomic_read(&s->atomic_switchover));
         ++count;
         if (qatomic_read(&s->atomic_switchover) && flag) break;
+
+        // usleep for shm_object duration time.
+        uint32_t iter = s->shm_obj.duration / 100;
+        while (iter && !qatomic_read(&s->atomic_switchover)) {
+            usleep(100);
+            --iter;
+        }
     }
 
     printf("\nshm_iterations: %d\n", count);fflush(stdout);
@@ -4061,6 +4066,23 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     return MIG_ITERATE_BREAK;
 }
 
+extern int get_config_value(const char *key);
+void pin_thread_to_core(int core_id);
+void pin_thread_to_core(int core_id) {
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+
+   pthread_t current_thread = pthread_self();
+   int result = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+
+
+   if (result != 0) {
+       fprintf(stderr, "Error setting thread affinity to core %d\n", core_id);
+       exit(EXIT_FAILURE);
+   }
+}
 /* Zezhou: logic of shared memory migration.
  * 
  */
@@ -4076,6 +4098,10 @@ static void *shm_migration_thread(void *opaque)
     object_ref(OBJECT(s));
     update_iteration_initial_status(s);
 
+    int bind_core = get_config_value("MIGRATION_CORE");
+    assert(bind_core != -1);
+    printf("%d\n", bind_core);
+    pin_thread_to_core(bind_core);
 
     // send machine header.
     bql_lock();
