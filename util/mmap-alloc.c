@@ -22,6 +22,7 @@
 #include "qemu/host-utils.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
+#include <sys/stat.h>
 
 #define HUGETLBFS_MAGIC       0x958458f6
 
@@ -264,7 +265,14 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
             static uint64_t prefix_len = 0;
             printf("memory chunk size: %lu\n", size);
             // Map the shared memory object into the process's address space
-            void *shm_ptr = mmap(0, 10ll * 1024 * 1024 * 1024, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+            struct stat sb;
+            if (fstat(shm_fd, &sb) == -1) {
+                perror("fstat");
+                exit(EXIT_FAILURE);
+            }
+            // printf("shared memory fd size is: %ld\n", sb.st_size);
+            void *shm_ptr = mmap(0, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
             if (shm_ptr == MAP_FAILED) {
                 perror("mmap");
                 exit(EXIT_FAILURE);
