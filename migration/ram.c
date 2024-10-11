@@ -4686,21 +4686,71 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
-#define MAX_PAGES 32
+
+// Zezhou: multi-thread page promotion using `move_pages`.
+#define PROMOTION_THREADS 8 // 2^k
+#define BLOCK_THRESHOLD 50000000
+#define MAX_PAGES 8
 extern int get_config_value(const char *key);
+
+void* promote_pages_thread(void *opaque);
+void* promote_pages_thread(void *opaque) {
+    int thread_id = *((int *)opaque);
+    int dst_numa = get_config_value("DST_NUMA");
+    assert(dst_numa >= 0);
+
+    void *pages[MAX_PAGES];
+    int numa_nodes[MAX_PAGES] = {0};
+    int status[MAX_PAGES];
+    int non_zero_pages = 0, succeeded = 0, cnt = 0;
+
+    RAMBlock *block;
+    RAMBLOCK_FOREACH_MIGRATABLE(block) {
+        if (block->used_length <= BLOCK_THRESHOLD) continue;
+
+        for (int i = 0; i < MAX_PAGES; ++i) numa_nodes[i] = dst_numa;
+        printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
+
+        uint32_t length = block->used_length >> TARGET_PAGE_BITS;
+        assert((length & (PROMOTION_THREADS - 1)) == 0);
+        uint32_t start_ = thread_id * (length / PROMOTION_THREADS);
+        uint32_t end_ = start_ + (length / PROMOTION_THREADS);
+
+        for (uint32_t i = start_; i < end_ ; ++i) {
+            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+            
+            if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+                pages[cnt++] = block->host + offset;
+                ++non_zero_pages;
+            }
+
+            if (cnt == MAX_PAGES || i == end_ - 1) {
+                if (move_pages(0, cnt, pages, numa_nodes, status, MPOL_MF_MOVE_ALL) == -1) {
+                    puts("move_pages");fflush(stdout);
+                    exit(-1);
+                }
+                for (int j = 0; j < cnt; ++j) succeeded += status[j] >= 0;
+                cnt = 0;
+            }
+        }
+
+        printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, non_zero_pages, succeeded);fflush(stdout);
+    }
+
+    return NULL;
+}
+
 static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
 static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
 {
     RAMBlock *block;
-    /* enumerate all memory blocks. */
+    int dst_numa = get_config_value("DST_NUMA");
+    assert(dst_numa >= 0);
+    unsigned long nodemask = 1 << dst_numa;
+
     RAMBLOCK_FOREACH_MIGRATABLE(block) {
         // small memory chunks have been copied to local.
-        if (block->used_length <= 50000000) continue;
-
-        // all future pages will be allocated on the target node.
-        int dst_numa = get_config_value("DST_NUMA");
-        assert(dst_numa >= 0);
-        unsigned long nodemask = 1 << dst_numa;
+        if (block->used_length <= BLOCK_THRESHOLD) continue;
 
         /* Zezhou: bind the memory to the target node.
          *     We must set the `MPOL_MF_MOVE_ALL` flag. But actually it doesn't migrate existing pages...
@@ -4711,49 +4761,18 @@ static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
             perror("mbind");
             exit(EXIT_FAILURE);
         }
+    }
 
-        // promote pages in this block.
-        void *pages[MAX_PAGES];
-        int numa_nodes[MAX_PAGES] = {0};
-        int status[MAX_PAGES];
-        int num = 0;
-        int succeeded = 0;
-        int cnt = 0;
-
-        for (int i = 0; i < MAX_PAGES; ++i) numa_nodes[i] = dst_numa;
-
-        printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
-
-        int EACCESS_COUNT = 0;
-
-        for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
-            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
-            
-            if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
-                pages[cnt++] = block->host + offset;
-                ++num;
-            }
-
-            if (cnt == MAX_PAGES || i == (block->used_length >> TARGET_PAGE_BITS) - 1) {
-                if (move_pages(0, cnt, pages, numa_nodes, status, MPOL_MF_MOVE_ALL) == -1) {
-                    puts("move_pages");fflush(stdout);
-                    exit(-1);
-                }
-                for (int j = 0; j < cnt; ++j) {
-                    succeeded += status[j] >= 0;
-
-                    // check if fails because of don't have privilege.
-                    if (status[j] == -EACCES) {
-                        ++EACCESS_COUNT;
-                    }
-                }
-                cnt = 0;
-            }
-        }
-
-        printf("EACCESS: %d\n", EACCESS_COUNT);fflush(stdout);
-
-        printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, num, succeeded);fflush(stdout);
+    // create 4 qemu threads to promote pages in parallel.
+    QemuThread threads[PROMOTION_THREADS];
+    int thread_ids[PROMOTION_THREADS];
+    for (int i = 0; i < PROMOTION_THREADS; ++i) {
+        thread_ids[i] = i;
+        qemu_thread_create(&threads[i], "promote_pages_thread",
+                            promote_pages_thread, &thread_ids[i], QEMU_THREAD_JOINABLE);
+    }
+    for (int i = 0; i < PROMOTION_THREADS; ++i) {
+        qemu_thread_join(&threads[i]);
     }
 }
 
