@@ -1724,6 +1724,8 @@ int ram_write_tracking_start(void)
     RAMState *rs = ram_state;
     RAMBlock *block;
 
+    puts("Who called this function?"); fflush(stdout);
+
     /* Open UFFD file descriptor */
     uffd_fd = uffd_create_fd(UFFD_FEATURE_PAGEFAULT_FLAG_WP, true);
     if (uffd_fd < 0) {
@@ -3492,7 +3494,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     }
 
     int64_t duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
-    printf("iteration time: %ld us\n", duration);
+    printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n", duration, count, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
     if (switchover && duration < 50000) {
@@ -4687,93 +4689,340 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 }
 
 
-// Zezhou: multi-thread page promotion using `move_pages`.
-#define PROMOTION_THREADS 8 // 2^k
-#define BLOCK_THRESHOLD 50000000
-#define MAX_PAGES 8
-extern int get_config_value(const char *key);
+// // Zezhou: multi-thread page promotion using `move_pages`.
+// #define PROMOTION_THREADS 1 // 2^k
+// #define BLOCK_THRESHOLD 50000000
+// #define MAX_PAGES 8
+// extern int get_config_value(const char *key);
 
-void* promote_pages_thread(void *opaque);
-void* promote_pages_thread(void *opaque) {
-    int thread_id = *((int *)opaque);
-    int dst_numa = get_config_value("DST_NUMA");
-    assert(dst_numa >= 0);
+// void* promote_pages_thread(void *opaque);
+// void* promote_pages_thread(void *opaque) {
+//     int thread_id = *((int *)opaque);
+//     int dst_numa = get_config_value("DST_NUMA");
+//     assert(dst_numa >= 0);
 
-    void *pages[MAX_PAGES];
-    int numa_nodes[MAX_PAGES] = {0};
-    int status[MAX_PAGES];
-    int non_zero_pages = 0, succeeded = 0, cnt = 0;
+//     void *pages[MAX_PAGES];
+//     int numa_nodes[MAX_PAGES] = {0};
+//     int status[MAX_PAGES];
+//     int non_zero_pages = 0, succeeded = 0, cnt = 0;
 
-    RAMBlock *block;
-    RAMBLOCK_FOREACH_MIGRATABLE(block) {
-        if (block->used_length <= BLOCK_THRESHOLD) continue;
+//     RAMBlock *block;
+//     RAMBLOCK_FOREACH_MIGRATABLE(block) {
+//         if (block->used_length <= BLOCK_THRESHOLD) continue;
 
-        for (int i = 0; i < MAX_PAGES; ++i) numa_nodes[i] = dst_numa;
-        printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
+//         for (int i = 0; i < MAX_PAGES; ++i) numa_nodes[i] = dst_numa;
+//         printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
 
-        uint32_t length = block->used_length >> TARGET_PAGE_BITS;
-        assert((length & (PROMOTION_THREADS - 1)) == 0);
-        uint32_t start_ = thread_id * (length / PROMOTION_THREADS);
-        uint32_t end_ = start_ + (length / PROMOTION_THREADS);
+//         uint32_t length = block->used_length >> TARGET_PAGE_BITS;
+//         assert((length & (PROMOTION_THREADS - 1)) == 0);
+//         uint32_t start_ = thread_id * (length / PROMOTION_THREADS);
+//         uint32_t end_ = start_ + (length / PROMOTION_THREADS);
 
-        for (uint32_t i = start_; i < end_ ; ++i) {
-            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+//         for (uint32_t i = start_; i < end_ ; ++i) {
+//             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
             
-            if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
-                pages[cnt++] = block->host + offset;
-                ++non_zero_pages;
-            }
+//             if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
+//                 pages[cnt++] = block->host + offset;
+//                 ++non_zero_pages;
+//             }
 
-            if (cnt == MAX_PAGES || i == end_ - 1) {
-                if (move_pages(0, cnt, pages, numa_nodes, status, MPOL_MF_MOVE_ALL) == -1) {
-                    puts("move_pages");fflush(stdout);
-                    exit(-1);
-                }
-                for (int j = 0; j < cnt; ++j) succeeded += status[j] >= 0;
-                cnt = 0;
-            }
+//             if (cnt == MAX_PAGES || i == end_ - 1) {
+//                 if (move_pages(0, cnt, pages, numa_nodes, status, MPOL_MF_MOVE_ALL) == -1) {
+//                     puts("move_pages");fflush(stdout);
+//                     exit(-1);
+//                 }
+//                 for (int j = 0; j < cnt; ++j) succeeded += status[j] >= 0;
+//                 cnt = 0;
+//             }
+//         }
+
+//         printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, non_zero_pages, succeeded);fflush(stdout);
+//     }
+
+//     return NULL;
+// }
+
+// static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
+// static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
+// {
+//     RAMBlock *block;
+//     int dst_numa = get_config_value("DST_NUMA");
+//     assert(dst_numa >= 0);
+//     unsigned long nodemask = 1 << dst_numa;
+
+//     RAMBLOCK_FOREACH_MIGRATABLE(block) {
+//         // small memory chunks have been copied to local.
+//         if (block->used_length <= BLOCK_THRESHOLD) continue;
+
+//         /* Zezhou: bind the memory to the target node.
+//          *     We must set the `MPOL_MF_MOVE_ALL` flag. But actually it doesn't migrate existing pages...
+//          *     So we still need `move_pages` to promote existing pages.
+//          *     It's good because we want the have a flexible promotion policy.
+//          */
+//         if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, MPOL_MF_MOVE_ALL) != 0) {
+//             perror("mbind");
+//             exit(EXIT_FAILURE);
+//         }
+//     }
+
+//     // create 4 qemu threads to promote pages in parallel.
+//     QemuThread threads[PROMOTION_THREADS];
+//     int thread_ids[PROMOTION_THREADS];
+//     for (int i = 0; i < PROMOTION_THREADS; ++i) {
+//         thread_ids[i] = i;
+//         qemu_thread_create(&threads[i], "promote_pages_thread",
+//                             promote_pages_thread, &thread_ids[i], QEMU_THREAD_JOINABLE);
+//     }
+//     for (int i = 0; i < PROMOTION_THREADS; ++i) {
+//         qemu_thread_join(&threads[i]);
+//     }
+// }
+
+
+
+#define MAX_COPY_THREADS 4
+pthread_t copy_threads[MAX_COPY_THREADS];
+struct pmemcpy {
+  pthread_mutex_t lock;
+  pthread_barrier_t barrier;
+  _Atomic bool write_zeros;
+  _Atomic void *dst;
+  _Atomic void *src;
+  _Atomic size_t length;
+};
+static struct pmemcpy pmemcpy;
+
+void *hemem_parallel_memcpy_thread(void *arg);
+void *hemem_parallel_memcpy_thread(void *arg)
+{
+  uint64_t tid = (uint64_t)arg;
+  void *src;
+  void *dst;
+  size_t length;
+  size_t chunk_size;
+
+  assert(tid < MAX_COPY_THREADS);
+
+  for (;;) {
+    int r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+    // grab data out of shared struct
+    length = pmemcpy.length;
+    chunk_size = length / MAX_COPY_THREADS;
+    dst = pmemcpy.dst + (tid * chunk_size);
+    if (!pmemcpy.write_zeros) {
+      src = pmemcpy.src + (tid * chunk_size);
+      memcpy(dst, src, chunk_size);
+    }
+    else {
+      memset(dst, 0, chunk_size);
+    }
+
+    r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    /* pmemcpy.done_bitmap[tid] = true; */
+  }
+  return NULL;
+}
+
+static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
+{
+  /* uint64_t i; */
+  /* bool all_threads_done; */
+  pthread_mutex_lock(&(pmemcpy.lock));
+  pmemcpy.dst = dst;
+  pmemcpy.src = src;
+  pmemcpy.length = length;
+  pmemcpy.write_zeros = false;
+
+  int r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+  r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  //LOG("parallel migration finished\n");
+  pthread_mutex_unlock(&(pmemcpy.lock));
+}
+
+#include <linux/userfaultfd.h>
+#include <err.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <linux/userfaultfd.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int prepare_uffd(void);
+int prepare_uffd(void) {
+    int uffd = uffd_open(O_CLOEXEC | O_NONBLOCK);
+    if (uffd < 0) {
+        printf("uffd_create_fd failed\n");
+        exit(1);
+    }
+
+    struct uffdio_api uffdio_api;
+    uffdio_api.api = UFFD_API;
+    uffdio_api.features = 0;
+    if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
+        perror("ioctl/uffdio_api");
+        exit(1);
+    }
+    if (uffdio_api.api != UFFD_API) {
+        fprintf(stderr, "unsupported userfaultfd api\n");
+        exit(1);
+    }
+
+    if (uffdio_api.features & UFFD_FEATURE_PAGEFAULT_FLAG_WP) {
+        printf("Write-protection (UFFD_FEATURE_WP) is supported.\n");
+    } else  {
+        printf("UFFD_FEATURE_PAGEFAULT_FLAG_WP is not supported.\n");
+        printf("Maybe you need to upgrade your kernel, check https://man7.org/linux/man-pages/man2/userfaultfd.2.html");
+        fflush(stdout);
+        exit(1);
+    }
+    return uffd;
+}
+
+static void *shm_wp_fault_handle_thread(void *opaque) {
+    int uffd = *(int *)opaque;
+    struct uffd_msg msg;
+    struct pollfd pollfd;
+    pollfd.fd = uffd;
+    pollfd.events = POLLIN;
+
+    while (1) {
+        int pollres = poll(&pollfd, 1, -1);
+        if (pollres == -1) {
+            perror("poll");
+            exit(1);
+        }
+        if (read(uffd, &msg, sizeof(msg)) != sizeof(msg)) {
+            perror("read");
+            exit(1);
+        }
+        if (msg.event != UFFD_EVENT_PAGEFAULT) {
+            fprintf(stderr, "Unexpected event on userfaultfd\n");
+            exit(1);
         }
 
-        printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, non_zero_pages, succeeded);fflush(stdout);
+        // printf("Page fault at address: %p\n", (void *)msg.arg.pagefault.address);
+        assert(msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP); // must be write-protection fault.
+
+        struct uffdio_range range;
+        range.start = msg.arg.pagefault.address;
+        range.len = getpagesize();
+        if (ioctl(uffd, UFFDIO_WAKE, &range) < 0) {
+            perror("uffdio wake");
+            assert(0);
+        }
     }
+}
+
+
+static void *disaggregated_ram_move_thread(void *unused) {
+    RAMBlock *block;
+    size_t move_size = getpagesize() * 32;
+    size_t moved_blocks = 0;
+
+    puts("\nstart userfault fd page promotion."); fflush(stdout);
+    int uffd = prepare_uffd();
+
+    QemuThread fault_thread;
+    qemu_thread_create(&fault_thread, "shm write protection fault handle thread",
+                        shm_wp_fault_handle_thread, &uffd, QEMU_THREAD_JOINABLE);
+    
+    RAMBLOCK_FOREACH_MIGRATABLE(block) {
+        if (block->used_length <= 50000000) continue;
+
+        // create a local file to store the moved RAM block
+        int local_fd = memfd_create("locally moved VM RAM", 0); // by default local DRAM?
+        if (local_fd < 0) {
+            printf("memfd_create failed\n");
+            exit(1);
+        }
+        if (ftruncate(local_fd, block->used_length) != 0) {
+            printf("ftruncate failed for local RAM\n");
+            exit(1);
+        }
+        char *temp_map = mmap(NULL,
+                              block->used_length,
+                              PROT_READ|PROT_WRITE,
+                              MAP_SHARED,
+                              local_fd,
+                              0);
+        if (temp_map == MAP_FAILED) {
+            printf("temp mmap failed\n");
+            exit(1);
+        }
+
+        /* register write-protection to all pages.
+         * WARNING: assume all pages are allocated, we don't capture UFFDIO_REGISTER_MODE_MISSING faults.
+         */
+        struct uffdio_register uffdio_register;
+        uffdio_register.range.start = (unsigned long)block->host;
+        uffdio_register.range.len = block->used_length;
+        uffdio_register.mode = UFFDIO_REGISTER_MODE_WP;
+        if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+            perror("UFFDIO_REGISTER");
+            exit(1);
+        }
+
+        printf("moving RAM block of size %lu from thymesisflow\n",block->used_length);
+
+        for (size_t offset = 0; offset < block->used_length; offset += move_size) {
+            // write-protect.
+            struct uffdio_writeprotect wp;
+            wp.range.start = (unsigned long)block->host + offset;
+            wp.range.len = move_size;
+            wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+            if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp) == -1) {
+                perror("UFFDIO_WRITEPROTECT");
+                exit(1);
+            }
+
+            hemem_parallel_memcpy(temp_map + offset, block->host + offset, move_size);
+
+            char *fixed_map = mmap(block->host + offset,
+                                   move_size,
+                                   PROT_READ|PROT_WRITE,
+                                   MAP_SHARED|MAP_FIXED,
+                                   local_fd,
+                                   offset);
+
+            if (fixed_map == MAP_FAILED) {
+                printf("fixed mmap failed\n");
+                exit(1);
+            }
+        }
+        moved_blocks++;
+        if (munmap(temp_map, block->used_length) != 0) {
+            printf("munmap failed\n");
+            exit(1);
+        }
+    }
+
+    printf("Disaggregated Zero-Copy Migration completed.\n"); fflush(stdout);
 
     return NULL;
 }
 
-static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
-static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
-{
-    RAMBlock *block;
-    int dst_numa = get_config_value("DST_NUMA");
-    assert(dst_numa >= 0);
-    unsigned long nodemask = 1 << dst_numa;
-
-    RAMBLOCK_FOREACH_MIGRATABLE(block) {
-        // small memory chunks have been copied to local.
-        if (block->used_length <= BLOCK_THRESHOLD) continue;
-
-        /* Zezhou: bind the memory to the target node.
-         *     We must set the `MPOL_MF_MOVE_ALL` flag. But actually it doesn't migrate existing pages...
-         *     So we still need `move_pages` to promote existing pages.
-         *     It's good because we want the have a flexible promotion policy.
-         */
-        if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, MPOL_MF_MOVE_ALL) != 0) {
-            perror("mbind");
-            exit(EXIT_FAILURE);
-        }
+static void ram_load_disaggregated(QEMUFile *f, void *opaque) {
+    assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
+    assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
+    for (int i = 0; i < MAX_COPY_THREADS; i++) {
+        assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
     }
 
-    // create 4 qemu threads to promote pages in parallel.
-    QemuThread threads[PROMOTION_THREADS];
-    int thread_ids[PROMOTION_THREADS];
-    for (int i = 0; i < PROMOTION_THREADS; ++i) {
-        thread_ids[i] = i;
-        qemu_thread_create(&threads[i], "promote_pages_thread",
-                            promote_pages_thread, &thread_ids[i], QEMU_THREAD_JOINABLE);
-    }
-    for (int i = 0; i < PROMOTION_THREADS; ++i) {
-        qemu_thread_join(&threads[i]);
-    }
+    disaggregated_ram_move_thread(NULL);
 }
 
 static int ram_load_shm(QEMUFile *f, void *opaque, int version_id, void *shm_obj)
@@ -4996,7 +5245,7 @@ void postcopy_preempt_shutdown_file(MigrationState *s)
 static SaveVMHandlers savevm_ram_handlers = {
     .save_setup_shm = ram_save_setup_shm, // shared memory setup handler.
     .load_state_shm = ram_load_shm,
-    .load_state_promote_pages_shm = ram_promote_pages_shm,
+    .load_state_promote_pages_shm = ram_load_disaggregated,
     .save_live_iterate_shm = ram_save_iterate_shm, // shared memory iterate handler.
     .save_live_complete_precopy_shm = ram_save_complete_shm,
 
