@@ -698,15 +698,6 @@ static void qemu_start_incoming_migration(const char *uri, bool has_channels,
     }
 }
 
-static void* shm_promote_pages_bh(void *opaque)
-{
-    // Zezhou: start page promotion logic.
-    MigrationIncomingState *mis = opaque;
-    printf("Hello world from shm_promote_pages_bh!\n");fflush(stdout);
-    qemu_loadvm_promote_pages(NULL, mis);
-    return NULL;
-}
-
 static void process_incoming_migration_bh(void *opaque)
 {
     Error *local_err = NULL;
@@ -776,14 +767,6 @@ static void process_incoming_migration_bh(void *opaque)
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
                       MIGRATION_STATUS_COMPLETED);
     migration_incoming_state_destroy();
-
-    /* Zezhou: start page promotion logic.
-     * It's dependent on "qemu_loadvm_state_shm" since we need to know metadata of ramblocks first.
-     * We definitely can parallelize this with copying small chunks, but is it worth it?
-     */
-    QemuThread thread;
-    qemu_thread_create(&thread, "page_promotion",
-                        shm_promote_pages_bh, mis, QEMU_THREAD_JOINABLE);
 }
 
 static void coroutine_fn
@@ -4211,7 +4194,6 @@ static void coroutine_fn
 process_incoming_migration_shm_co(void *opaque)
 {
     MigrationIncomingState *mis = migration_incoming_get_current();
-    // PostcopyState ps;
     int ret;
 
     mis->largest_page_size = qemu_ram_pagesize_largest();
@@ -4227,7 +4209,7 @@ process_incoming_migration_shm_co(void *opaque)
     // shit copilot.
     assert(mis->from_src_file);
 
-    // load all small memory blocks of ram by directly copying to local.
+    // Zezhou: load vm state(include ram), `pc.ram` uses page promotion and directly copy other small chunks.
     mis->loadvm_co = qemu_coroutine_self();
     ret = qemu_loadvm_state_shm(mis->from_src_file);
     assert(ret == 0);

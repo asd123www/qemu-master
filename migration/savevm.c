@@ -3782,6 +3782,26 @@ int qemu_savevm_state_complete_precopy_shm(shm_target *shm_obj)
     return 0;
 }
 
+// Zezhou: promote pages in `pc.ram` into local numa node.
+void* qemu_loadvm_promote_pages(void *opaque)
+{
+    MigrationIncomingState *mis = (MigrationIncomingState *)opaque;
+    SaveStateEntry *se;
+    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+        if (strcmp(se->idstr, "ram") == 0) {
+            break;
+        }
+    }
+    assert(se != NULL && se->section_id == 0x02);
+    assert(se->vmsd == NULL);
+
+    int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    se->ops->load_state_promote_pages_shm(NULL, NULL, (void *)(&mis->shm_obj));
+    printf("Elapsed time: %ld ms\n", qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - start_time);fflush(stdout);
+
+    return NULL;
+}
+
 int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis);
 int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis)
 {
@@ -3805,6 +3825,15 @@ int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis)
     }
     assert(se != NULL && se->section_id == 0x02);
     assert(se->vmsd == NULL);
+
+    /* Zezhou: start page promotion logic.
+     * For small ram chunks, we directly copy them via load_state_shm, check `ram_load_shm` in `ram.c`.
+     * For `pc.ram`, we promote pages into local numa node, check `ram_load_disaggregated` in `ram.c`.
+     * We use a thread for `pc.ram`, so we can parallel those two parts.
+     */
+    QemuThread thread;
+    qemu_thread_create(&thread, "page_promotion",
+                        qemu_loadvm_promote_pages, mis, QEMU_THREAD_DETACHED);
     ret = se->ops->load_state_shm(f, se->opaque, se->load_version_id, (void *)(&mis->shm_obj));
     if (ret < 0) {
         error_report("error while loading state section id %d(%s)",
@@ -3939,21 +3968,4 @@ int qemu_savevm_state_iterate_shm(QEMUFile *f, bool switchover)
         flag |= ret;
     }
     return flag;
-}
-
-// Zezhou: promote pages into local numa node.
-void qemu_loadvm_promote_pages(QEMUFile *f, MigrationIncomingState *mis)
-{
-    SaveStateEntry *se;
-    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
-        if (strcmp(se->idstr, "ram") == 0) {
-            break;
-        }
-    }
-    assert(se != NULL && se->section_id == 0x02);
-    assert(se->vmsd == NULL);
-
-    int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
-    se->ops->load_state_promote_pages_shm(NULL, NULL, (void *)(&mis->shm_obj));
-    printf("Elapsed time: %ld ms\n", qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - start_time);fflush(stdout);
 }

@@ -3435,6 +3435,7 @@ out:
  */
 static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 {
+    static bool first_switchover = true;
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
@@ -3468,7 +3469,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                 unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
                 unsigned long bit = 0;
 
-                if (!switchover || block->used_length < BLOCK_THRESHOLD) {
+                if (!switchover || block->used_length < BLOCK_THRESHOLD || first_switchover) {
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
@@ -3487,15 +3488,15 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                     }
                 } else {
                     // save some hotness information into the shared memory.
-                    void *write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
-                    unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
+                    // void *write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
+                    // unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
 
                     printf("Switchover is true and the Ram block is : %s\n", block->idstr);fflush(stdout);
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
                         assert(test_and_clear_bit(bit, block->bmap));
-                        set_bit(bit, write_hotness_bitmap);
+                        // set_bit(bit, write_hotness_bitmap);
                         ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
 
                         /* zezhou: memory copying has certain overheads.
@@ -3517,6 +3518,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n", duration, count, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
+    first_switchover = !switchover;
     if (switchover && duration < 50000) {
         return 1;
     }
@@ -4727,161 +4729,6 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
-
-// // Zezhou: multi-thread page promotion using `move_pages`.
-// #define PROMOTION_THREADS 1 // 2^k
-// #define MAX_PAGES 8
-
-// void* promote_pages_thread(void *opaque);
-// void* promote_pages_thread(void *opaque) {
-//     int thread_id = *((int *)opaque);
-//     int dst_numa = get_config_value("DST_NUMA");
-//     assert(dst_numa >= 0);
-
-//     void *pages[MAX_PAGES];
-//     int numa_nodes[MAX_PAGES] = {0};
-//     int status[MAX_PAGES];
-//     int non_zero_pages = 0, succeeded = 0, cnt = 0;
-
-//     RAMBlock *block;
-//     RAMBLOCK_FOREACH_MIGRATABLE(block) {
-//         if (block->used_length <= BLOCK_THRESHOLD) continue;
-
-//         for (int i = 0; i < MAX_PAGES; ++i) numa_nodes[i] = dst_numa;
-//         printf("asd123www: promote pages in block %s\n", block->idstr);fflush(stdout);
-
-//         uint32_t length = block->used_length >> TARGET_PAGE_BITS;
-//         assert((length & (PROMOTION_THREADS - 1)) == 0);
-//         uint32_t start_ = thread_id * (length / PROMOTION_THREADS);
-//         uint32_t end_ = start_ + (length / PROMOTION_THREADS);
-
-//         for (uint32_t i = start_; i < end_ ; ++i) {
-//             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
-            
-//             if (!buffer_is_zero(block->host + offset, TARGET_PAGE_SIZE)) {
-//                 pages[cnt++] = block->host + offset;
-//                 ++non_zero_pages;
-//             }
-
-//             if (cnt == MAX_PAGES || i == end_ - 1) {
-//                 if (move_pages(0, cnt, pages, numa_nodes, status, MPOL_MF_MOVE_ALL) == -1) {
-//                     puts("move_pages");fflush(stdout);
-//                     exit(-1);
-//                 }
-//                 for (int j = 0; j < cnt; ++j) succeeded += status[j] >= 0;
-//                 cnt = 0;
-//             }
-//         }
-
-//         printf("asd123www: numa_promote pages in block %s, # of pages %d, succeed: %d\n", block->idstr, non_zero_pages, succeeded);fflush(stdout);
-//     }
-
-//     return NULL;
-// }
-
-// static void ram_promote_pages_shm(QEMUFile *f, void *opaque);
-// static void ram_promote_pages_shm(QEMUFile *f, void *opaque)
-// {
-//     RAMBlock *block;
-//     int dst_numa = get_config_value("DST_NUMA");
-//     assert(dst_numa >= 0);
-//     unsigned long nodemask = 1 << dst_numa;
-
-//     RAMBLOCK_FOREACH_MIGRATABLE(block) {
-//         // small memory chunks have been copied to local.
-//         if (block->used_length <= BLOCK_THRESHOLD) continue;
-
-//         /* Zezhou: bind the memory to the target node.
-//          *     We must set the `MPOL_MF_MOVE_ALL` flag. But actually it doesn't migrate existing pages...
-//          *     So we still need `move_pages` to promote existing pages.
-//          *     It's good because we want the have a flexible promotion policy.
-//          */
-//         if (mbind(block->host, block->used_length, MPOL_BIND, &nodemask, 32, MPOL_MF_MOVE_ALL) != 0) {
-//             perror("mbind");
-//             exit(EXIT_FAILURE);
-//         }
-//     }
-
-//     // create 4 qemu threads to promote pages in parallel.
-//     QemuThread threads[PROMOTION_THREADS];
-//     int thread_ids[PROMOTION_THREADS];
-//     for (int i = 0; i < PROMOTION_THREADS; ++i) {
-//         thread_ids[i] = i;
-//         qemu_thread_create(&threads[i], "promote_pages_thread",
-//                             promote_pages_thread, &thread_ids[i], QEMU_THREAD_JOINABLE);
-//     }
-//     for (int i = 0; i < PROMOTION_THREADS; ++i) {
-//         qemu_thread_join(&threads[i]);
-//     }
-// }
-
-
-
-#define MAX_COPY_THREADS 4
-pthread_t copy_threads[MAX_COPY_THREADS];
-struct pmemcpy {
-  pthread_mutex_t lock;
-  pthread_barrier_t barrier;
-  _Atomic bool write_zeros;
-  _Atomic void *dst;
-  _Atomic void *src;
-  _Atomic size_t length;
-};
-static struct pmemcpy pmemcpy;
-
-void *hemem_parallel_memcpy_thread(void *arg);
-void *hemem_parallel_memcpy_thread(void *arg)
-{
-  uint64_t tid = (uint64_t)arg;
-  void *src;
-  void *dst;
-  size_t length;
-  size_t chunk_size;
-
-  assert(tid < MAX_COPY_THREADS);
-
-  for (;;) {
-    int r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-    // grab data out of shared struct
-    length = pmemcpy.length;
-    chunk_size = length / MAX_COPY_THREADS;
-    dst = pmemcpy.dst + (tid * chunk_size);
-    if (!pmemcpy.write_zeros) {
-      src = pmemcpy.src + (tid * chunk_size);
-      memcpy(dst, src, chunk_size);
-    }
-    else {
-      memset(dst, 0, chunk_size);
-    }
-
-    r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-    /* pmemcpy.done_bitmap[tid] = true; */
-  }
-  return NULL;
-}
-
-// static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
-// {
-//   /* uint64_t i; */
-//   /* bool all_threads_done; */
-//   pthread_mutex_lock(&(pmemcpy.lock));
-//   pmemcpy.dst = dst;
-//   pmemcpy.src = src;
-//   pmemcpy.length = length;
-//   pmemcpy.write_zeros = false;
-
-//   int r = pthread_barrier_wait(&pmemcpy.barrier);
-//   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-//   r = pthread_barrier_wait(&pmemcpy.barrier);
-//   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-//   //LOG("parallel migration finished\n");
-//   pthread_mutex_unlock(&(pmemcpy.lock));
-// }
-
 #include <linux/userfaultfd.h>
 #include <err.h>
 #include <errno.h>
@@ -4919,12 +4766,12 @@ int prepare_uffd(void) {
     }
 
     if (uffdio_api.features & UFFD_FEATURE_PAGEFAULT_FLAG_WP) {
-        printf("Write-protection (UFFD_FEATURE_WP) is supported.\n");
+        // printf("Write-protection (UFFD_FEATURE_WP) is supported.\n");
     } else  {
         printf("UFFD_FEATURE_PAGEFAULT_FLAG_WP is not supported.\n");
-        printf("Maybe you need to upgrade your kernel, check https://man7.org/linux/man-pages/man2/userfaultfd.2.html");
+        printf("Maybe you need to upgrade your kernel to 5.19.x, check https://man7.org/linux/man-pages/man2/userfaultfd.2.html");
         fflush(stdout);
-        exit(1);
+        assert(0);
     }
     return uffd;
 }
@@ -4968,11 +4815,7 @@ static void *shm_wp_fault_handle_thread(void *opaque) {
 
 static void *disaggregated_ram_move_thread(void *shm_obj) {
     RAMBlock *block;
-    size_t move_size = getpagesize();
-
-    printf("move_size: %lu\n", move_size); fflush(stdout);
-
-    puts("\nstart userfault fd page promotion."); fflush(stdout);
+    size_t move_size = getpagesize(); // 4KB for one page.
     int uffd = prepare_uffd();
 
     QemuThread fault_thread;
@@ -4997,7 +4840,7 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
         char *temp_map = mmap(NULL,
                               block->used_length,
                               PROT_READ | PROT_WRITE,
-                              MAP_SHARED | MAP_POPULATE,
+                              MAP_SHARED,
                               local_fd,
                               0);
         if (temp_map == MAP_FAILED) {
@@ -5025,8 +4868,7 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
             exit(1);
         }
 
-        printf("moving RAM block of size %lu from thymesisflow\n",block->used_length);
-
+        printf("Promoting RAM block of size %lu from shared memory\n",block->used_length);
         void *write_hotness_ptr = ((shm_target *)shm_obj)->shm_ptr + get_config_value("META_STATE_LENGTH");
         unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
         unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
@@ -5034,8 +4876,6 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
         while (1) {
             bit = find_next_bit(write_hotness_bitmap, nbits, bit);
             if (bit >= nbits) break;
-
-            // printf("Promoting write hot page %lu\n", bit); fflush(stdout);
 
             ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
             // write-protect.
@@ -5047,23 +4887,20 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
                 perror("UFFDIO_WRITEPROTECT");
                 assert(0);
             }
-
+            
             memcpy(temp_map + offset, block->host + offset, move_size);
 
             char *fixed_map = mmap(block->host + offset,
                                    move_size,
                                    PROT_READ | PROT_WRITE,
-                                   MAP_SHARED | MAP_FIXED,
+                                   MAP_SHARED | MAP_POPULATE | MAP_FIXED,
                                    local_fd,
                                    offset);
 
             if (fixed_map == MAP_FAILED) {
-                perror("mmap failed");
-                printf("fixed mmap failed\n");
-                long page_size = sysconf(_SC_PAGESIZE);
-                assert((offset % page_size) == 0);
-                assert(((uint64_t)block->host % page_size) == 0);
-                printf("addr: %p, offset: %lu\n", block->host + offset, offset);
+                printf("mmap failed with error: %d (%s)\n", errno, strerror(errno));
+                puts("If the error is ENOMEM(12), check \"cat /proc/sys/vm/max_map_count\"");
+                puts("Increase it can possibly solve the problem. \"sudo sysctl -w vm.max_map_count=262144\"\n");
                 exit(1);
             }
             ++bit;
@@ -5083,12 +4920,6 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
 }
 
 static void ram_load_disaggregated(QEMUFile *f, void *opaque, void *shm_obj) {
-    assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
-    assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
-    for (int i = 0; i < MAX_COPY_THREADS; i++) {
-        assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
-    }
-
     disaggregated_ram_move_thread(shm_obj);
 }
 
