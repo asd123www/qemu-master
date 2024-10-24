@@ -249,7 +249,9 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         // Zezhou: very hacky way...
         int dst_numa = get_config_value("DST_NUMA");
         int cxl_numa = get_config_value("CXL_NUMA");
-        assert(dst_numa != -1 && cxl_numa != -1);
+        int meta_state_length = get_config_value("META_STATE_LENGTH");
+        int hot_page_state_length= get_config_value("HOT_PAGE_STATE_LENGTH");
+        assert(dst_numa != -1 && cxl_numa != -1 && meta_state_length != -1 && hot_page_state_length != -1);
         if (size < 50000000) {
             activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
@@ -271,19 +273,14 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
                 perror("fstat");
                 exit(EXIT_FAILURE);
             }
-            // printf("shared memory fd size is: %ld\n", sb.st_size);
+            // the physically memory is located at "cxl_numa" since the source was writing there.
             void *shm_ptr = mmap(0, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
             if (shm_ptr == MAP_FAILED) {
                 perror("mmap");
                 exit(EXIT_FAILURE);
             }
-            // unsigned long nodemask = 1 << cxl_numa;
-            // if (mbind(shm_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
-            //     perror("mbind");
-            //     exit(EXIT_FAILURE);
-            // }
 
-            activated_ptr = (char *)shm_ptr + 1048576 + prefix_len;
+            activated_ptr = (char *)shm_ptr + meta_state_length + hot_page_state_length + prefix_len;
             prefix_len += size;
         }
     }

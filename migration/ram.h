@@ -35,6 +35,9 @@
 
 extern XBZRLECacheStats xbzrle_counters;
 
+#define BLOCK_THRESHOLD 50000000
+extern int get_config_value(const char *key);
+
 /* Should be holding either ram_list.mutex, or the RCU lock. */
 #define RAMBLOCK_FOREACH_NOT_IGNORED(block)            \
     INTERNAL_RAMBLOCK_FOREACH(block)                   \

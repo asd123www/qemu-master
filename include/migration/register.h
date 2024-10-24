@@ -196,7 +196,7 @@ typedef struct SaveVMHandlers {
      */
     int (*save_live_iterate_shm)(QEMUFile *f, void *opaque, bool switchover);
 
-    void (*load_state_promote_pages_shm)(QEMUFile *f, void *opaque);
+    void (*load_state_promote_pages_shm)(QEMUFile *f, void *opaque, void *shm_obj);
 
     /* This runs outside the BQL!  */
 

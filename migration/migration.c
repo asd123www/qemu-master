@@ -701,8 +701,9 @@ static void qemu_start_incoming_migration(const char *uri, bool has_channels,
 static void* shm_promote_pages_bh(void *opaque)
 {
     // Zezhou: start page promotion logic.
+    MigrationIncomingState *mis = opaque;
     printf("Hello world from shm_promote_pages_bh!\n");fflush(stdout);
-    qemu_loadvm_promote_pages(NULL);
+    qemu_loadvm_promote_pages(NULL, mis);
     return NULL;
 }
 
@@ -776,11 +777,13 @@ static void process_incoming_migration_bh(void *opaque)
                       MIGRATION_STATUS_COMPLETED);
     migration_incoming_state_destroy();
 
-    // Zezhou: start page promotion logic.
+    /* Zezhou: start page promotion logic.
+     * It's dependent on "qemu_loadvm_state_shm" since we need to know metadata of ramblocks first.
+     * We definitely can parallelize this with copying small chunks, but is it worth it?
+     */
     QemuThread thread;
     qemu_thread_create(&thread, "page_promotion",
-                        shm_promote_pages_bh, NULL, QEMU_THREAD_JOINABLE);
-
+                        shm_promote_pages_bh, mis, QEMU_THREAD_JOINABLE);
 }
 
 static void coroutine_fn
@@ -3992,6 +3995,8 @@ static int migration_completion_precopy_shm(MigrationState *s,
 
     // save the state: cpu registers, interrupts.
     ret = qemu_savevm_state_complete_precopy_shm(&s->shm_obj);
+    int SHM_MIGRATION_QUEUE_SIZE = get_config_value("META_STATE_LENGTH");
+    assert(SHM_MIGRATION_QUEUE_SIZE != -1);
     assert(s->shm_obj.shm_offset < SHM_MIGRATION_QUEUE_SIZE);
 out_unlock:
     bql_unlock();
@@ -4066,7 +4071,6 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
     return MIG_ITERATE_BREAK;
 }
 
-extern int get_config_value(const char *key);
 void pin_thread_to_core(int core_id);
 void pin_thread_to_core(int core_id) {
    cpu_set_t cpuset;
@@ -4147,7 +4151,7 @@ void shm_init(shm_target *shm_obj, void *shm_ptr, uint64_t shm_size, uint64_t du
     shm_obj->shm_ptr = shm_ptr;
     shm_obj->shm_size = shm_size;
     shm_obj->duration = duration;
-    shm_obj->ram = shm_ptr + SHM_MIGRATION_QUEUE_SIZE;
+    shm_obj->ram = shm_ptr + get_config_value("META_STATE_LENGTH") + get_config_value("HOT_PAGE_STATE_LENGTH");
 }
 
 /* Zezhou: shared memory migration.
@@ -4170,6 +4174,7 @@ void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, uint64_t duration, Error 
     migrate_error_free(s);
 
     shm_init(&s->shm_obj, shm_ptr, shm_size, duration);
+    memset(shm_ptr, 0, get_config_value("META_STATE_LENGTH") + get_config_value("HOT_PAGE_STATE_LENGTH"));
 
     s->expected_downtime = migrate_downtime_limit();
 
@@ -4222,6 +4227,7 @@ process_incoming_migration_shm_co(void *opaque)
     // shit copilot.
     assert(mis->from_src_file);
 
+    // load all small memory blocks of ram by directly copying to local.
     mis->loadvm_co = qemu_coroutine_self();
     ret = qemu_loadvm_state_shm(mis->from_src_file);
     assert(ret == 0);

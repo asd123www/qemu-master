@@ -3942,7 +3942,7 @@ int qemu_savevm_state_iterate_shm(QEMUFile *f, bool switchover)
 }
 
 // Zezhou: promote pages into local numa node.
-void qemu_loadvm_promote_pages(QEMUFile *f)
+void qemu_loadvm_promote_pages(QEMUFile *f, MigrationIncomingState *mis)
 {
     SaveStateEntry *se;
     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
@@ -3954,7 +3954,6 @@ void qemu_loadvm_promote_pages(QEMUFile *f)
     assert(se->vmsd == NULL);
 
     int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
-    se->ops->load_state_promote_pages_shm(NULL, NULL);
+    se->ops->load_state_promote_pages_shm(NULL, NULL, (void *)(&mis->shm_obj));
     printf("Elapsed time: %ld ms\n", qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - start_time);fflush(stdout);
-
 }
