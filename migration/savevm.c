@@ -3831,9 +3831,10 @@ int qemu_loadvm_state_main_shm(QEMUFile *f, MigrationIncomingState *mis)
      * For `pc.ram`, we promote pages into local numa node, check `ram_load_disaggregated` in `ram.c`.
      * We use a thread for `pc.ram`, so we can parallel those two parts.
      */
-    QemuThread thread;
-    qemu_thread_create(&thread, "page_promotion",
-                        qemu_loadvm_promote_pages, mis, QEMU_THREAD_DETACHED);
+    puts("No promotion.");fflush(stdout);
+    // QemuThread thread;
+    // qemu_thread_create(&thread, "page_promotion",
+    //                     qemu_loadvm_promote_pages, mis, QEMU_THREAD_DETACHED);
     ret = se->ops->load_state_shm(f, se->opaque, se->load_version_id, (void *)(&mis->shm_obj));
     if (ret < 0) {
         error_report("error while loading state section id %d(%s)",

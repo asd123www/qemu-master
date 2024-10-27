@@ -3435,7 +3435,6 @@ out:
  */
 static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 {
-    static bool first_switchover = true;
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
@@ -3469,7 +3468,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                 unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
                 unsigned long bit = 0;
 
-                if (!switchover || block->used_length < BLOCK_THRESHOLD || first_switchover) {
+                if (!switchover || block->used_length < BLOCK_THRESHOLD) {
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
@@ -3488,15 +3487,15 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                     }
                 } else {
                     // save some hotness information into the shared memory.
-                    // void *write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
-                    // unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
+                    void *write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
+                    unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
 
                     printf("Switchover is true and the Ram block is : %s\n", block->idstr);fflush(stdout);
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
                         assert(test_and_clear_bit(bit, block->bmap));
-                        // set_bit(bit, write_hotness_bitmap);
+                        set_bit(bit, write_hotness_bitmap);
                         ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
 
                         /* zezhou: memory copying has certain overheads.
@@ -3518,7 +3517,6 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n", duration, count, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
-    first_switchover = !switchover;
     if (switchover && duration < 50000) {
         return 1;
     }
@@ -4776,11 +4774,18 @@ int prepare_uffd(void) {
     return uffd;
 }
 
+struct promotion_data {
+    RAMBlock *block;
+    char *temp_map;
+    int uffd;
+    int local_fd;
+};
+
 static void *shm_wp_fault_handle_thread(void *opaque) {
-    int uffd = *(int *)opaque;
+    struct promotion_data data = *(struct promotion_data *)opaque;
     struct uffd_msg msg;
     struct pollfd pollfd;
-    pollfd.fd = uffd;
+    pollfd.fd = data.uffd;
     pollfd.events = POLLIN;
 
     while (1) {
@@ -4789,7 +4794,7 @@ static void *shm_wp_fault_handle_thread(void *opaque) {
             perror("poll");
             assert(0);
         }
-        if (read(uffd, &msg, sizeof(struct uffd_msg)) != sizeof(struct uffd_msg)) {
+        if (read(data.uffd, &msg, sizeof(struct uffd_msg)) != sizeof(struct uffd_msg)) {
             if (errno == EAGAIN) continue;
             perror("read");
             assert(0);
@@ -4805,7 +4810,22 @@ static void *shm_wp_fault_handle_thread(void *opaque) {
         struct uffdio_range range;
         range.start = msg.arg.pagefault.address;
         range.len = getpagesize();
-        if (ioctl(uffd, UFFDIO_WAKE, &range) < 0) {
+
+        ram_addr_t offset = range.start - (ram_addr_t)data.block->host;
+        memcpy(data.temp_map + offset, data.block->host + offset, getpagesize());
+        char *fixed_map = mmap(data.block->host + offset,
+                                range.len,
+                                PROT_READ | PROT_WRITE,
+                                MAP_SHARED | MAP_POPULATE | MAP_FIXED,
+                                data.local_fd,
+                                offset);
+
+        if (fixed_map == MAP_FAILED) {
+            printf("Fault handling thread: mmap failed with error: %d (%s)\n", errno, strerror(errno));
+            puts("Fault handling thread: Don't actively remap but instead wait for the main thread to finish.");
+        }
+
+        if (ioctl(data.uffd, UFFDIO_WAKE, &range) < 0) {
             perror("uffdio wake");
             assert(0);
         }
@@ -4818,10 +4838,6 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
     size_t move_size = getpagesize(); // 4KB for one page.
     int uffd = prepare_uffd();
 
-    QemuThread fault_thread;
-    qemu_thread_create(&fault_thread, "shm write protection fault handle thread",
-                        shm_wp_fault_handle_thread, &uffd, QEMU_THREAD_JOINABLE);
-    
     unsigned long write_promote_count = 0;
     
     RAMBLOCK_FOREACH_MIGRATABLE(block) {
@@ -4868,6 +4884,16 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
             exit(1);
         }
 
+        struct promotion_data data;
+        data.block = block;
+        data.temp_map = temp_map;
+        data.uffd = uffd;
+        data.local_fd = local_fd;
+
+        QemuThread fault_thread;
+        qemu_thread_create(&fault_thread, "shm write protection fault handle thread",
+                            shm_wp_fault_handle_thread, &data, QEMU_THREAD_JOINABLE);
+
         printf("Promoting RAM block of size %lu from shared memory\n",block->used_length);
         void *write_hotness_ptr = ((shm_target *)shm_obj)->shm_ptr + get_config_value("META_STATE_LENGTH");
         unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
@@ -4905,6 +4931,50 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
             }
             ++bit;
             ++write_promote_count;
+        }
+
+        puts("Finished promoting the write-hot pages in the block.");fflush(stdout);
+
+        usleep(5000);
+        // traverse all the pages in the block and check if this page has been promoted.
+        for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
+            if (test_bit(i, write_hotness_bitmap)) continue;
+            uint32_t j = i + 1;
+            while (j < (block->used_length >> TARGET_PAGE_BITS) && !test_bit(j, write_hotness_bitmap)) {
+                ++j;
+                if (j - i >= 256) break;
+            }
+            ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+            ram_addr_t length = ((ram_addr_t)j - i) << TARGET_PAGE_BITS;
+
+            struct uffdio_writeprotect wp;
+            wp.range.start = (unsigned long)block->host + offset;
+            wp.range.len = length;
+            wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+            if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp) == -1) {
+                perror("UFFDIO_WRITEPROTECT");
+                assert(0);
+            }
+
+            memcpy(temp_map + offset, block->host + offset, length);
+            
+            char *fixed_map = mmap(block->host + offset,
+                                   length,
+                                   PROT_READ | PROT_WRITE,
+                                   MAP_SHARED | MAP_POPULATE | MAP_FIXED,
+                                   local_fd,
+                                   offset);
+
+            if (fixed_map == MAP_FAILED) {
+                printf("mmap failed with error: %d (%s)\n", errno, strerror(errno));
+                puts("If the error is ENOMEM(12), check \"cat /proc/sys/vm/max_map_count\"");
+                puts("Increase it can possibly solve the problem. \"sudo sysctl -w vm.max_map_count=262144\"\n");
+                exit(1);
+            }
+
+            if (j - i < 5) usleep(1000);
+            else if (j - i < 10) usleep(100);
+            i = j - 1;
         }
 
         if (munmap(temp_map, block->used_length) != 0) {
