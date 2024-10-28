@@ -4030,6 +4030,7 @@ fail:
 static MigIterateState migration_iteration_run_shm(MigrationState *s)
 {
     puts("\nasd123www: migration_iteration_run_shm");
+    printf("The sleep interval is %lu, block size & threshold is: (%d, %d)\n", s->shm_obj.duration, WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD);
     fflush(stdout);
 
     qatomic_set(&s->atomic_switchover, false);
@@ -4166,7 +4167,7 @@ void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, uint64_t duration, Error 
     }
 
     qemu_thread_create(&s->thread, "shared_memory_migration",
-            shm_migration_thread, s, QEMU_THREAD_JOINABLE);
+            shm_migration_thread, s, QEMU_THREAD_DETACHED);
     s->migration_thread_running = true;
     return;
 

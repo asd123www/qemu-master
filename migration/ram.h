@@ -36,6 +36,8 @@
 extern XBZRLECacheStats xbzrle_counters;
 
 #define BLOCK_THRESHOLD 50000000
+#define WRITE_THROUGH_BLOCK_SIZE 4096 // # of 4KB pages, must be power of 2.
+#define WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD 300 // batch clear threshold.
 extern int get_config_value(const char *key);
 
 /* Should be holding either ram_list.mutex, or the RCU lock. */
