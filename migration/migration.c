@@ -4042,9 +4042,9 @@ static MigIterateState migration_iteration_run_shm(MigrationState *s)
         if (qatomic_read(&s->atomic_switchover) && flag) break;
 
         // usleep for shm_object duration time.
-        uint32_t iter = s->shm_obj.duration / 100;
+        uint32_t iter = s->shm_obj.duration / 1000;
         while (iter && !qatomic_read(&s->atomic_switchover)) {
-            usleep(100);
+            usleep(1000);
             --iter;
         }
     }
@@ -4086,10 +4086,10 @@ static void *shm_migration_thread(void *opaque)
     object_ref(OBJECT(s));
     update_iteration_initial_status(s);
 
-    int bind_core = get_config_value("MIGRATION_CORE");
-    assert(bind_core != -1);
-    printf("%d\n", bind_core);
-    pin_thread_to_core(bind_core);
+    // int bind_core = get_config_value("MIGRATION_CORE");
+    // assert(bind_core != -1);
+    // printf("no bind_core %d\n", bind_core);
+    // pin_thread_to_core(bind_core);
 
     // send machine header.
     bql_lock();
@@ -4167,7 +4167,7 @@ void qmp_shm_migrate(void *shm_ptr, uint64_t shm_size, uint64_t duration, Error 
     }
 
     qemu_thread_create(&s->thread, "shared_memory_migration",
-            shm_migration_thread, s, QEMU_THREAD_DETACHED);
+                        shm_migration_thread, s, QEMU_THREAD_JOINABLE);
     s->migration_thread_running = true;
     return;
 
