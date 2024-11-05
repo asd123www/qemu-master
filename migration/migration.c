@@ -4030,26 +4030,25 @@ fail:
 static MigIterateState migration_iteration_run_shm(MigrationState *s)
 {
     puts("\nasd123www: migration_iteration_run_shm");
-    printf("The sleep interval is %lu, block size & threshold is: (%d, %d)\n", s->shm_obj.duration, WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD);
+    printf("The sleep interval is %lu, block size & threshold is: (%d, %.2f)\n", s->shm_obj.duration, WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD);
     fflush(stdout);
 
     qatomic_set(&s->atomic_switchover, false);
 
-    int count = 0;
     while (1) {
+        int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
         bool flag = qemu_savevm_state_iterate_shm(s->to_dst_file, qatomic_read(&s->atomic_switchover));
-        ++count;
+        int64_t iter_duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
         if (qatomic_read(&s->atomic_switchover) && flag) break;
+        if (iter_duration > s->shm_obj.duration) continue;
 
         // usleep for shm_object duration time.
-        uint32_t iter = s->shm_obj.duration / 1000;
+        uint32_t iter = (s->shm_obj.duration - iter_duration) / 1000;
         while (iter && !qatomic_read(&s->atomic_switchover)) {
             usleep(1000);
             --iter;
         }
     }
-
-    printf("\nshm_iterations: %d\n", count);fflush(stdout);
 
     migration_completion_shm(s);
     return MIG_ITERATE_BREAK;
@@ -4088,7 +4087,7 @@ static void *shm_migration_thread(void *opaque)
 
     // int bind_core = get_config_value("MIGRATION_CORE");
     // assert(bind_core != -1);
-    // printf("no bind_core %d\n", bind_core);
+    // printf("bind migration thread to core[%d]\n", bind_core);
     // pin_thread_to_core(bind_core);
 
     // send machine header.

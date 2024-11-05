@@ -3426,6 +3426,16 @@ out:
 }
 
 
+
+void *mig_block_lst;
+int compare_indices(const void *p, const void *q);
+int compare_indices(const void *p, const void *q) {
+    unsigned long a = *(const unsigned long *)p;
+    unsigned long b = *(const unsigned long *)q;
+    struct zezhou_block *zb1 = (struct zezhou_block *)mig_block_lst + a;
+    struct zezhou_block *zb2 = (struct zezhou_block *)mig_block_lst + b;
+    return zb1->dirty_num < zb2->dirty_num;
+}
 /**
  * ram_save_iterate: iterative stage for migration
  *
@@ -3436,6 +3446,10 @@ out:
  */
 static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 {
+    static bool first_time = true;
+    static unsigned long *idx = NULL;
+    static void *write_hotness_ptr = NULL;
+    static unsigned long *write_hotness_bitmap = NULL;
     RAMState **temp = opaque;
     RAMState *rs = *temp;
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
@@ -3453,72 +3467,90 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
 
     int count = 0;
     int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-    WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
-        WITH_RCU_READ_LOCK_GUARD() {
-            /* enumerate all memory blocks. */
-            RAMBlock *block;
-            RAMBLOCK_FOREACH_MIGRATABLE(block) {
-                assert(block->bmap != NULL);
+    if (first_time || switchover) {
+        // puts("first time or switchover");fflush(stdout);
+        if (first_time) {
+            write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
+            write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
+        }
 
-                /* zezhou: clear dirty bit in EPT & flush TLB, hurts voltdb-VM's performance a lot(43.0k vs 29.3k).
-                 *         the latency is in [500, 1000]us(each iteration) in r650 cloudlab machine, depends on the # of dirty pages.
-                 *         Property: constant latency(compared with memcpy) & huge overhead.
-                 */
-                unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
-                unsigned long bit = 0;
-
-                if (!switchover || block->used_length < BLOCK_THRESHOLD) {
-                    /* Zezhou: blockwise dirty page synchronization.
-                     *      Avoid dirty bit clearing by batching dirty pages inside a block.
-                     *      If the dirty pages is smaller than a threshold, then we wait, otherwise clear & copy.
-                     *      This can guanrantee the dirty set is less than a threshold (let's say 10%).
-                     */
-                    while (1) {
-                        bit = find_next_bit(block->bmap, nbits, bit);
-                        if (bit >= nbits) break;
-                        unsigned long block_start = bit & (~((unsigned long)WRITE_THROUGH_BLOCK_SIZE -1));
-                        unsigned long block_end = MIN(nbits, block_start + (unsigned long)WRITE_THROUGH_BLOCK_SIZE);
-
-                        int dirty_count = 0;
-                        for (unsigned long i = bit; i < block_end; i = find_next_bit(block->bmap, nbits, i + 1)) ++dirty_count;
-                        if (dirty_count > WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD) {
-                            memory_region_clear_dirty_bitmap(block->mr, 
-                                                            ((ram_addr_t)block_start) << TARGET_PAGE_BITS, 
-                                                            ((ram_addr_t)WRITE_THROUGH_BLOCK_SIZE) << TARGET_PAGE_BITS);
-                            for (unsigned long i = bit; i < block_end; i = find_next_bit(block->bmap, nbits, i + 1)) {
-                                assert(test_and_clear_bit(i, block->bmap));
-                                ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
-                                memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, 
-                                        block->host + offset, TARGET_PAGE_SIZE);
-                                ++count;
-                            }
-                        }
-                        bit = block_end;
-                    }
-                } else {
-                    // save some hotness information into the shared memory.
-                    void *write_hotness_ptr = pss->shm_obj->shm_ptr + get_config_value("META_STATE_LENGTH");
-                    unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
-
-                    printf("Switchover is true and the Ram block is : %s\n", block->idstr);fflush(stdout);
+        WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
+            WITH_RCU_READ_LOCK_GUARD() {
+                RAMBlock *block;
+                RAMBLOCK_FOREACH_MIGRATABLE(block) {
+                    assert(block->bmap != NULL);
+                    unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
+                    unsigned long bit = 0;
+                    bool hot_save = switchover && block->used_length > BLOCK_THRESHOLD;
                     memory_region_clear_dirty_bitmap(block->mr, 0, block->used_length);
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
                         assert(test_and_clear_bit(bit, block->bmap));
-                        set_bit(bit, write_hotness_bitmap);
+                        if (hot_save) set_bit(bit, write_hotness_bitmap);
                         ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
-
-                        /* zezhou: memory copying has certain overheads.
-                        *         Experiment: copying all pages without clearing, so the dirty set is growing monotonically.
-                        *         voltdb-VM: (43.0k vs [40.8k, 41.6k]).
-                        *              LLC & memory bandwidth inteference.
-                        */
                         memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, 
                                 block->host + offset, TARGET_PAGE_SIZE);
                         ++bit;
                         ++count;
                     }
+                    if (first_time && block->used_length > BLOCK_THRESHOLD) {
+                        // allocate nbits * sizeof(struct zezhou_block) memory to mig_block_lst.
+                        assert(nbits % WRITE_THROUGH_BLOCK_SIZE == 0);
+                        unsigned block_num = nbits / WRITE_THROUGH_BLOCK_SIZE;
+                        idx = g_malloc0(sizeof(unsigned long) * block_num);
+                        mig_block_lst = g_malloc0(block_num * sizeof(struct zezhou_block));
+                        for (unsigned long i = 0; i < block_num; ++i) {
+                            idx[i] = i;
+                            struct zezhou_block *zb = (struct zezhou_block *)mig_block_lst + i;
+                            zb->dirty_num = 0;
+                        }
+                    }
+                }
+            }
+        }
+        first_time = false;
+    } else {
+        // puts("block-wise check.");fflush(stdout);
+        WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
+            WITH_RCU_READ_LOCK_GUARD() {
+                RAMBlock *block;
+                RAMBLOCK_FOREACH_MIGRATABLE(block) {
+                    assert(block->bmap != NULL);
+                    if (block->used_length <= BLOCK_THRESHOLD) continue;
+                    // the pc.ram block.
+                    unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
+                    unsigned long block_num = nbits / WRITE_THROUGH_BLOCK_SIZE;
+                    unsigned long dirty_count = 0;
+                    for (int i = 0; i < block_num; ++i) {
+                        struct zezhou_block *zb = (struct zezhou_block *)mig_block_lst + i;
+                        unsigned long new_count = bitmap_count_one_with_offset(block->bmap, i * WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_BLOCK_SIZE);
+                        assert(zb->dirty_num <= new_count);
+                        zb->dirty_num = new_count;
+                        dirty_count += new_count;
+                    }
+                    qsort(idx, block_num, sizeof(unsigned long), compare_indices);
+                    int cnt = -1;
+                    while (dirty_count > nbits * WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD) {
+                        ++cnt;
+                        struct zezhou_block *zb = (struct zezhou_block *)mig_block_lst + idx[cnt];
+                        dirty_count -= zb->dirty_num;
+                        zb->dirty_num = 0;
+                    }
+                    for(int i = 0; i <= cnt; ++i) {
+                        memory_region_clear_dirty_bitmap(block->mr, 
+                                                        ((ram_addr_t)idx[i]) * WRITE_THROUGH_BLOCK_SIZE << TARGET_PAGE_BITS, 
+                                                        ((ram_addr_t)WRITE_THROUGH_BLOCK_SIZE) << TARGET_PAGE_BITS);
+                        unsigned long start_ = idx[i] * WRITE_THROUGH_BLOCK_SIZE;
+                        unsigned long end_ = start_ + WRITE_THROUGH_BLOCK_SIZE;
+                        for (unsigned long bit = find_next_bit(block->bmap, end_, start_); bit < end_; bit = find_next_bit(block->bmap, end_, bit + 1)) {
+                            assert(test_and_clear_bit(bit, block->bmap));
+                            ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
+                            memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, TARGET_PAGE_SIZE);
+                            ++count;
+                        }
+                    }
+                    printf("dirty pages: %ld, clear blocks: %d\n", dirty_count, cnt + 1);fflush(stdout);
                 }
             }
         }
