@@ -3434,7 +3434,13 @@ int compare_indices(const void *p, const void *q) {
     unsigned long b = *(const unsigned long *)q;
     struct zezhou_block *zb1 = (struct zezhou_block *)mig_block_lst + a;
     struct zezhou_block *zb2 = (struct zezhou_block *)mig_block_lst + b;
-    return zb1->dirty_num < zb2->dirty_num;
+    return (zb1->dirty_num < LEAST_DIRTY_NUM) || (zb2->dirty_num > LEAST_DIRTY_NUM && zb1->hotness > zb2->hotness);
+}
+int compare_smalls(const void *p, const void *q);
+int compare_smalls(const void *p, const void *q) {
+    unsigned long a = *(const unsigned long *)p;
+    unsigned long b = *(const unsigned long *)q;
+    return a > b;
 }
 /**
  * ram_save_iterate: iterative stage for migration
@@ -3504,6 +3510,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                             idx[i] = i;
                             struct zezhou_block *zb = (struct zezhou_block *)mig_block_lst + i;
                             zb->dirty_num = 0;
+                            zb->hotness = 0;
                         }
                     }
                 }
@@ -3511,7 +3518,6 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
         }
         first_time = false;
     } else {
-        // puts("block-wise check.");fflush(stdout);
         WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
             WITH_RCU_READ_LOCK_GUARD() {
                 RAMBlock *block;
@@ -3526,6 +3532,8 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                         struct zezhou_block *zb = (struct zezhou_block *)mig_block_lst + i;
                         unsigned long new_count = bitmap_count_one_with_offset(block->bmap, i * WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_BLOCK_SIZE);
                         assert(zb->dirty_num <= new_count);
+                        // hotness value, decay with time.
+                        zb->hotness = zb->hotness * HOTNESS_LAMBDA + (1 - HOTNESS_LAMBDA) * (new_count - zb->dirty_num);
                         zb->dirty_num = new_count;
                         dirty_count += new_count;
                     }
@@ -3537,27 +3545,35 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                         dirty_count -= zb->dirty_num;
                         zb->dirty_num = 0;
                     }
-                    for(int i = 0; i <= cnt; ++i) {
+                    qsort(idx, cnt + 1, sizeof(unsigned long), compare_smalls);
+                    int tot = 0;
+                    for(int i = 0; i <= cnt;) {
+                        int j = i;
+                        while (j < cnt && idx[j + 1] == idx[j] + 1) ++j;
                         memory_region_clear_dirty_bitmap(block->mr, 
                                                         ((ram_addr_t)idx[i]) * WRITE_THROUGH_BLOCK_SIZE << TARGET_PAGE_BITS, 
-                                                        ((ram_addr_t)WRITE_THROUGH_BLOCK_SIZE) << TARGET_PAGE_BITS);
-                        unsigned long start_ = idx[i] * WRITE_THROUGH_BLOCK_SIZE;
-                        unsigned long end_ = start_ + WRITE_THROUGH_BLOCK_SIZE;
-                        for (unsigned long bit = find_next_bit(block->bmap, end_, start_); bit < end_; bit = find_next_bit(block->bmap, end_, bit + 1)) {
-                            assert(test_and_clear_bit(bit, block->bmap));
-                            ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
-                            memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, TARGET_PAGE_SIZE);
-                            ++count;
+                                                        ((ram_addr_t)WRITE_THROUGH_BLOCK_SIZE * (j - i + 1)) << TARGET_PAGE_BITS);
+                        for (int k = i; k <=j; ++k) {
+                            unsigned long start_ = idx[k] * WRITE_THROUGH_BLOCK_SIZE;
+                            unsigned long end_ = start_ + WRITE_THROUGH_BLOCK_SIZE;
+                            for (unsigned long bit = find_next_bit(block->bmap, end_, start_); bit < end_; bit = find_next_bit(block->bmap, end_, bit + 1)) {
+                                assert(test_and_clear_bit(bit, block->bmap));
+                                ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
+                                memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, TARGET_PAGE_SIZE);
+                                ++count;
+                            }
                         }
+                        i = j + 1;
+                        ++tot;
                     }
-                    printf("dirty pages: %ld, clear blocks: %d\n", dirty_count, cnt + 1);fflush(stdout);
+                    printf("dirty pages: %ld, clear blocks: %d, kvm_blocks: %d\n", dirty_count, cnt + 1, tot);fflush(stdout);
                 }
             }
         }
     }
 
     int64_t duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
-    printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n", duration, count, switchover);fflush(stdout);
+    printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n\n", duration, count, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
     if (switchover && duration < 100000) {

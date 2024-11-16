@@ -234,8 +234,12 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
     if (shm_fd == -1) {
         // Don't have shm_obj, means the source VM.
         // QEMU's logic.
-        activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
-                         map_offset);
+        activated_ptr = mmap(ptr, 
+                            size, 
+                            prot, 
+                            flags | map_sync_flags | MAP_POPULATE, 
+                            fd,
+                            map_offset);
         
         int src_numa = get_config_value("SRC_NUMA");
         assert(src_numa != -1);
