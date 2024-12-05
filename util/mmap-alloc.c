@@ -28,6 +28,9 @@
 #ifdef CONFIG_LINUX
 #include <sys/vfs.h>
 #include <linux/magic.h>
+#include <numaif.h>
+#include <sched.h>
+#include <numa.h>
 #endif
 
 QemuFsType qemu_fd_getfs(int fd)
@@ -177,6 +180,32 @@ static void *mmap_reserve(size_t size, int fd)
     return mmap(0, size, PROT_NONE, flags, fd, 0);
 }
 
+
+
+int get_config_value(const char *key);
+int get_config_value(const char *key) {
+    FILE* file = fopen("./config.txt", "r");
+    if (file == NULL) {
+        puts("The file doesn't exist."); fflush(stdout);
+        exit(-1);
+    }
+    char line[255] = {0}, value[255] = {0};
+    char *endptr;
+    int num = -1;
+
+    while (fgets(line, 255, file)) {
+        if (strncmp(line, key, strlen(key)) == 0) {
+            strcpy(value, strchr(line, '=') + 1);
+            value[strcspn(value, "\n")] = 0;
+
+            num = strtol(value, &endptr, 10);
+            break;
+        }
+    }
+    fclose(file);
+    return num;
+}
+
 /*
  * Activate memory in a reserved region from the given fd (if any), to make
  * it accessible.
@@ -206,6 +235,29 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
 
     activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
+    
+    // Check this VM is src or dest based on cpu numa.
+    int cpu = sched_getcpu();
+    assert(cpu != -1);
+    int numa_node = numa_node_of_cpu(cpu); // Get the NUMA node of the CPU
+    assert(numa_node != -1);
+
+    int src_numa = get_config_value("SRC_NUMA");
+    int dst_numa = get_config_value("DST_NUMA");
+    assert(src_numa != -1 && dst_numa != -1);
+
+    unsigned long nodemask = 1 << numa_node;
+    if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
+        perror("mbind");
+        exit(EXIT_FAILURE);
+    }
+
+    // pre-fault for src VM.
+    if (numa_node == src_numa) {
+        puts("Pre fault all memory pages.");
+        memset(activated_ptr, 0, size);
+    }
+
     if (activated_ptr == MAP_FAILED && map_sync_flags) {
         if (errno == ENOTSUP) {
             char *proc_link = g_strdup_printf("/proc/self/fd/%d", fd);
