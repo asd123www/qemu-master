@@ -237,7 +237,7 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         activated_ptr = mmap(ptr, 
                             size, 
                             prot, 
-                            flags | map_sync_flags | MAP_POPULATE, 
+                            flags | map_sync_flags, 
                             fd,
                             map_offset);
         
@@ -248,6 +248,9 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
             perror("mbind");
             exit(EXIT_FAILURE);
         }
+
+        printf("src_numa: %d\n", src_numa);
+        memset(activated_ptr, 0, size);
     } else {
         // Destination VM.
         // Zezhou: very hacky way...
@@ -256,6 +259,8 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         int meta_state_length = get_config_value("META_STATE_LENGTH");
         int hot_page_state_length= get_config_value("HOT_PAGE_STATE_LENGTH");
         assert(dst_numa != -1 && cxl_numa != -1 && meta_state_length != -1 && hot_page_state_length != -1);
+
+        printf("dst_numa: %d\n", dst_numa);
         if (size < 50000000) {
             activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
@@ -267,6 +272,8 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
                     exit(EXIT_FAILURE);
                 }
             }
+            
+            memset(activated_ptr, 0, size);
         } else {
             static uint64_t prefix_len = 0;
             printf("memory chunk size: %lu\n", size);

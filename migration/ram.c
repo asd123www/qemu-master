@@ -3442,6 +3442,14 @@ int compare_smalls(const void *p, const void *q) {
     unsigned long b = *(const unsigned long *)q;
     return a > b;
 }
+void hotness_save(int idx, unsigned long *write_hotness_bitmap);
+void hotness_save(int idx, unsigned long *write_hotness_bitmap) {
+    int base_idx = idx - (idx & 3);
+    set_bit(base_idx, write_hotness_bitmap);
+    set_bit(base_idx + 1, write_hotness_bitmap);
+    set_bit(base_idx + 2, write_hotness_bitmap);
+    set_bit(base_idx + 3, write_hotness_bitmap);
+}
 /**
  * ram_save_iterate: iterative stage for migration
  *
@@ -3487,13 +3495,20 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                     assert(block->bmap != NULL);
                     unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
                     unsigned long bit = 0;
-                    bool hot_save = switchover && block->used_length > BLOCK_THRESHOLD;
+                    unsigned long ndirty_bits = bitmap_count_one_with_offset(block->bmap, 0, nbits);
+                    bool hot_save = switchover && block->used_length > BLOCK_THRESHOLD && ndirty_bits < 162144;
+                    printf("block: %s, dirty pages: %ld\n, hot_save: %d\n", block->idstr, ndirty_bits, hot_save);
                     memory_region_clear_dirty_bitmap(block->mr, 0, block->used_length);
                     while (1) {
                         bit = find_next_bit(block->bmap, nbits, bit);
                         if (bit >= nbits) break;
                         assert(test_and_clear_bit(bit, block->bmap));
-                        if (hot_save) set_bit(bit, write_hotness_bitmap);
+
+
+                        if (hot_save) {
+                            //set_bit(bit, write_hotness_bitmap);
+                            hotness_save(bit, write_hotness_bitmap);
+                        }
                         ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
                         memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, 
                                 block->host + offset, TARGET_PAGE_SIZE);
@@ -3573,10 +3588,10 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     }
 
     int64_t duration = qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
-    printf("iteration time: %ld us, # of dirty pages: %d, switchover: %d\n\n", duration, count, switchover);fflush(stdout);
+    printf("iteration time: %ld us, # of dirty pages: %d, throughput: %.2f, switchover: %d\n\n", duration, count, (double)count/duration, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
-    if (switchover && duration < 100000) {
+    if (switchover && duration < 150000) {
         return 1;
     }
 
@@ -3714,7 +3729,8 @@ static int ram_save_complete_shm(QEMUFile *f, void *opaque)
                 while (1) {
                     bit = find_next_bit(block->bmap, nbits, bit);
                     if (bit >= nbits) break;
-                    set_bit(bit, write_hotness_bitmap);
+                    // set_bit(bit, write_hotness_bitmap);
+                    hotness_save(bit, write_hotness_bitmap);
                     assert(test_and_clear_bit(bit, block->bmap));
                     
                     ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
@@ -4783,6 +4799,116 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     return ret;
 }
 
+
+
+
+// hemem parallel copy.
+#define MAX_COPY_THREADS 4
+pthread_t copy_threads[MAX_COPY_THREADS];
+struct pmemcpy {
+  pthread_mutex_t lock;
+  pthread_barrier_t barrier;
+  _Atomic bool write_zeros;
+  _Atomic void *dst;
+  _Atomic void *src;
+  _Atomic size_t length;
+};
+static struct pmemcpy pmemcpy;
+
+void *hemem_parallel_memcpy_thread(void *arg);
+void *hemem_parallel_memcpy_thread(void *arg)
+{
+  uint64_t tid = (uint64_t)arg;
+  void *src;
+  void *dst;
+  size_t length;
+  size_t chunk_size;
+
+  assert(tid < MAX_COPY_THREADS);
+
+  for (;;) {
+    /* while(!pmemcpy.activate || pmemcpy.done_bitmap[tid]) { } */
+    int r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    // if (tid == 0) {
+    //   memcpys++;
+    // }
+
+    // grab data out of shared struct
+    length = pmemcpy.length;
+    chunk_size = length / MAX_COPY_THREADS;
+    dst = pmemcpy.dst + (tid * chunk_size);
+    if (!pmemcpy.write_zeros) {
+      src = pmemcpy.src + (tid * chunk_size);
+      memcpy(dst, src, chunk_size);
+    }
+    else {
+      memset(dst, 0, chunk_size);
+    }
+
+    r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    /* pmemcpy.done_bitmap[tid] = true; */
+  }
+  return NULL;
+}
+
+// static void hemem_parallel_memset(void* addr, int c, size_t n)
+// {
+//   pthread_mutex_lock(&(pmemcpy.lock));
+//   pmemcpy.dst = addr;
+//   pmemcpy.length = n;
+//   pmemcpy.write_zeros = true;
+
+//   int r = pthread_barrier_wait(&pmemcpy.barrier);
+//   assert(r ==0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+//   r = pthread_barrier_wait(&pmemcpy.barrier);
+//   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+//   pthread_mutex_unlock(&(pmemcpy.lock));
+// }
+
+static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
+{
+  /* uint64_t i; */
+  /* bool all_threads_done; */
+  pthread_mutex_lock(&(pmemcpy.lock));
+  pmemcpy.dst = dst;
+  pmemcpy.src = src;
+  pmemcpy.length = length;
+  pmemcpy.write_zeros = false;
+
+  int r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+  //LOG("parallel migration started\n");
+  
+  /* pmemcpy.activate = true; */
+
+  /* while (!all_threads_done) { */
+  /*   all_threads_done = true; */
+  /*   for (i = 0; i < MAX_COPY_THREADS; i++) { */
+  /*     if (!pmemcpy.done_bitmap[i]) { */
+  /*       all_threads_done = false; */
+  /*       break; */
+  /*     } */
+  /*   } */
+  /* } */
+
+  r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  //LOG("parallel migration finished\n");
+  pthread_mutex_unlock(&(pmemcpy.lock));
+
+  /* pmemcpy.activate = false; */
+
+  /* for (i = 0; i < MAX_COPY_THREADS; i++) { */
+  /*   pmemcpy.done_bitmap[i] = false; */
+  /* } */
+}
+
+
 #include <linux/userfaultfd.h>
 #include <err.h>
 #include <errno.h>
@@ -4835,6 +4961,8 @@ struct promotion_data {
     char *temp_map;
     int uffd;
     int local_fd;
+    int thread_id;
+    void *shm_obj;
 };
 
 static void *shm_wp_fault_handle_thread(void *opaque) {
@@ -4888,14 +5016,74 @@ static void *shm_wp_fault_handle_thread(void *opaque) {
     }
 }
 
+static void *shm_page_promotion_thread(void *opaque) {
+    struct promotion_data data = *(struct promotion_data *)opaque;
+    RAMBlock *block = data.block;
+    void *shm_obj = data.shm_obj;
+    int uffd = data.uffd;
+    char *temp_map = data.temp_map;
+    int local_fd = data.local_fd;
+    int thread_id = data.thread_id;
+
+    unsigned long write_promote_count = 0;
+    void *write_hotness_ptr = ((shm_target *)shm_obj)->shm_ptr + get_config_value("META_STATE_LENGTH");
+    unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
+    unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
+
+    printf("Thread_id: %d start promoting write hot pages\n", thread_id);
+
+    assert(nbits % MAX_PROMOTE_THREADS == 0);
+    uint32_t start_ = nbits / MAX_PROMOTE_THREADS * thread_id;
+    uint32_t end_ = start_ + nbits / MAX_PROMOTE_THREADS;
+
+    for (uint32_t i = start_; i < end_; ++i) {
+        if (!test_bit(i, write_hotness_bitmap)) continue;
+        uint32_t j = i + 1;
+        while (j < nbits && test_bit(j, write_hotness_bitmap)) {
+            ++j;
+            if (j - i >= 8) break;
+        }
+        ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
+        ram_addr_t length = ((ram_addr_t)j - i) << TARGET_PAGE_BITS;
+
+        struct uffdio_writeprotect wp;
+        wp.range.start = (unsigned long)block->host + offset;
+        wp.range.len = length;
+        wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+        if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp) == -1) {
+            perror("UFFDIO_WRITEPROTECT");
+            assert(0);
+        }
+
+        memcpy(temp_map + offset, block->host + offset, length);
+        
+        char *fixed_map = mmap(block->host + offset,
+                                length,
+                                PROT_READ | PROT_WRITE,
+                                MAP_SHARED | MAP_POPULATE | MAP_FIXED,
+                                local_fd,
+                                offset);
+
+        if (fixed_map == MAP_FAILED) {
+            printf("mmap failed with error: %d (%s)\n", errno, strerror(errno));
+            puts("If the error is ENOMEM(12), check \"cat /proc/sys/vm/max_map_count\"");
+            puts("Increase it can possibly solve the problem. \"sudo sysctl -w vm.max_map_count=262144\"\n");
+            exit(1);
+        }
+        
+        write_promote_count += j - i;
+        i = j - 1;
+    }
+
+    printf("Thread_id: %d promoted %lu write hot pages\n", thread_id, write_promote_count);
+
+    return NULL;
+}
 
 static void *disaggregated_ram_move_thread(void *shm_obj) {
     RAMBlock *block;
-    size_t move_size = getpagesize(); // 4KB for one page.
     int uffd = prepare_uffd();
 
-    unsigned long write_promote_count = 0;
-    
     RAMBLOCK_FOREACH_MIGRATABLE(block) {
         if (block->used_length <= BLOCK_THRESHOLD) continue;
 
@@ -4951,54 +5139,33 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
                             shm_wp_fault_handle_thread, &data, QEMU_THREAD_JOINABLE);
 
         printf("Promoting RAM block of size %lu from shared memory\n",block->used_length);
+
+        int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+        QemuThread promote_thread[MAX_PROMOTE_THREADS];
+        struct promotion_data data_thread[MAX_PROMOTE_THREADS];
+        for (int i = 0; i < MAX_PROMOTE_THREADS; i++) {
+            data_thread[i].block = block;
+            data_thread[i].temp_map = temp_map;
+            data_thread[i].uffd = uffd;
+            data_thread[i].local_fd = local_fd;
+            data_thread[i].thread_id = i;
+            data_thread[i].shm_obj = shm_obj;
+            qemu_thread_create(&promote_thread[i], "promote_thread", shm_page_promotion_thread, &data_thread[i], QEMU_THREAD_JOINABLE);
+        }
+        for (int i = 0; i < MAX_PROMOTE_THREADS; i++) {
+            qemu_thread_join(&promote_thread[i]);
+        }
+        printf("Finished promoting the write-hot pages in the block in %lu us.\n", qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time);fflush(stdout);
+
+        // traverse all the pages in the block and check if this page has been promoted.
         void *write_hotness_ptr = ((shm_target *)shm_obj)->shm_ptr + get_config_value("META_STATE_LENGTH");
         unsigned long *write_hotness_bitmap = (unsigned long *)write_hotness_ptr;
-        unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
-        unsigned long bit = 0;
-        while (1) {
-            bit = find_next_bit(write_hotness_bitmap, nbits, bit);
-            if (bit >= nbits) break;
-
-            ram_addr_t offset = ((ram_addr_t)bit) << TARGET_PAGE_BITS;
-            // write-protect.
-            struct uffdio_writeprotect wp;
-            wp.range.start = (unsigned long)block->host + offset;
-            wp.range.len = move_size;
-            wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
-            if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp) == -1) {
-                perror("UFFDIO_WRITEPROTECT");
-                assert(0);
-            }
-            
-            memcpy(temp_map + offset, block->host + offset, move_size);
-
-            char *fixed_map = mmap(block->host + offset,
-                                   move_size,
-                                   PROT_READ | PROT_WRITE,
-                                   MAP_SHARED | MAP_POPULATE | MAP_FIXED,
-                                   local_fd,
-                                   offset);
-
-            if (fixed_map == MAP_FAILED) {
-                printf("mmap failed with error: %d (%s)\n", errno, strerror(errno));
-                puts("If the error is ENOMEM(12), check \"cat /proc/sys/vm/max_map_count\"");
-                puts("Increase it can possibly solve the problem. \"sudo sysctl -w vm.max_map_count=262144\"\n");
-                exit(1);
-            }
-            ++bit;
-            ++write_promote_count;
-        }
-
-        puts("Finished promoting the write-hot pages in the block.");fflush(stdout);
-
-        usleep(5000);
-        // traverse all the pages in the block and check if this page has been promoted.
         for (uint32_t i = 0; i < (block->used_length >> TARGET_PAGE_BITS); ++i) {
             if (test_bit(i, write_hotness_bitmap)) continue;
             uint32_t j = i + 1;
             while (j < (block->used_length >> TARGET_PAGE_BITS) && !test_bit(j, write_hotness_bitmap)) {
                 ++j;
-                if (j - i >= 256) break;
+                if (j - i >= 1024) break;
             }
             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
             ram_addr_t length = ((ram_addr_t)j - i) << TARGET_PAGE_BITS;
@@ -5012,7 +5179,7 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
                 assert(0);
             }
 
-            memcpy(temp_map + offset, block->host + offset, length);
+            hemem_parallel_memcpy(temp_map + offset, block->host + offset, length);
             
             char *fixed_map = mmap(block->host + offset,
                                    length,
@@ -5039,13 +5206,18 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
         }
     }
 
-    printf("Promoted %lu write hot pages\n", write_promote_count);
     printf("Disaggregated Zero-Copy Migration completed.\n"); fflush(stdout);
 
     return NULL;
 }
 
 static void ram_load_disaggregated(QEMUFile *f, void *opaque, void *shm_obj) {
+    assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
+    assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
+    for (int i = 0; i < MAX_COPY_THREADS; i++) {
+        assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
+    }
+
     disaggregated_ram_move_thread(shm_obj);
 }
 

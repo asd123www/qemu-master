@@ -4030,7 +4030,7 @@ fail:
 static MigIterateState migration_iteration_run_shm(MigrationState *s)
 {
     puts("\nasd123www: migration_iteration_run_shm");
-    printf("The sleep interval is %lu, block size & threshold is: (%d, %.2f)\n", s->shm_obj.duration, WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD);
+    printf("The sleep interval is %lu, block size & threshold is: (%d, %.2f, lowest %d, hotness: %.2f)\n", s->shm_obj.duration, WRITE_THROUGH_BLOCK_SIZE, WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD, LEAST_DIRTY_NUM, HOTNESS_LAMBDA);
     fflush(stdout);
 
     qatomic_set(&s->atomic_switchover, false);

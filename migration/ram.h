@@ -39,7 +39,8 @@ extern XBZRLECacheStats xbzrle_counters;
 #define HOTNESS_LAMBDA 0.9
 #define WRITE_THROUGH_BLOCK_SIZE 2048 // # of 4KB pages, must be power of 2.
 #define WRITE_THROUGH_CLEAR_BLOCK_THRESHOLD 0.08 // batch clear threshold.
-#define LEAST_DIRTY_NUM 1
+#define LEAST_DIRTY_NUM 50
+#define MAX_PROMOTE_THREADS 2
 extern int get_config_value(const char *key);
 
 struct zezhou_block {
