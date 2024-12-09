@@ -4802,111 +4802,111 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 
 
 
-// hemem parallel copy.
-#define MAX_COPY_THREADS 4
-pthread_t copy_threads[MAX_COPY_THREADS];
-struct pmemcpy {
-  pthread_mutex_t lock;
-  pthread_barrier_t barrier;
-  _Atomic bool write_zeros;
-  _Atomic void *dst;
-  _Atomic void *src;
-  _Atomic size_t length;
-};
-static struct pmemcpy pmemcpy;
+// // hemem parallel copy.
+// #define MAX_COPY_THREADS 4
+// pthread_t copy_threads[MAX_COPY_THREADS];
+// struct pmemcpy {
+//   pthread_mutex_t lock;
+//   pthread_barrier_t barrier;
+//   _Atomic bool write_zeros;
+//   _Atomic void *dst;
+//   _Atomic void *src;
+//   _Atomic size_t length;
+// };
+// static struct pmemcpy pmemcpy;
 
-void *hemem_parallel_memcpy_thread(void *arg);
-void *hemem_parallel_memcpy_thread(void *arg)
-{
-  uint64_t tid = (uint64_t)arg;
-  void *src;
-  void *dst;
-  size_t length;
-  size_t chunk_size;
-
-  assert(tid < MAX_COPY_THREADS);
-
-  for (;;) {
-    /* while(!pmemcpy.activate || pmemcpy.done_bitmap[tid]) { } */
-    int r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-    // if (tid == 0) {
-    //   memcpys++;
-    // }
-
-    // grab data out of shared struct
-    length = pmemcpy.length;
-    chunk_size = length / MAX_COPY_THREADS;
-    dst = pmemcpy.dst + (tid * chunk_size);
-    if (!pmemcpy.write_zeros) {
-      src = pmemcpy.src + (tid * chunk_size);
-      memcpy(dst, src, chunk_size);
-    }
-    else {
-      memset(dst, 0, chunk_size);
-    }
-
-    r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-    /* pmemcpy.done_bitmap[tid] = true; */
-  }
-  return NULL;
-}
-
-// static void hemem_parallel_memset(void* addr, int c, size_t n)
+// void *hemem_parallel_memcpy_thread(void *arg);
+// void *hemem_parallel_memcpy_thread(void *arg)
 // {
+//   uint64_t tid = (uint64_t)arg;
+//   void *src;
+//   void *dst;
+//   size_t length;
+//   size_t chunk_size;
+
+//   assert(tid < MAX_COPY_THREADS);
+
+//   for (;;) {
+//     /* while(!pmemcpy.activate || pmemcpy.done_bitmap[tid]) { } */
+//     int r = pthread_barrier_wait(&pmemcpy.barrier);
+//     assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+//     // if (tid == 0) {
+//     //   memcpys++;
+//     // }
+
+//     // grab data out of shared struct
+//     length = pmemcpy.length;
+//     chunk_size = length / MAX_COPY_THREADS;
+//     dst = pmemcpy.dst + (tid * chunk_size);
+//     if (!pmemcpy.write_zeros) {
+//       src = pmemcpy.src + (tid * chunk_size);
+//       memcpy(dst, src, chunk_size);
+//     }
+//     else {
+//       memset(dst, 0, chunk_size);
+//     }
+
+//     r = pthread_barrier_wait(&pmemcpy.barrier);
+//     assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+//     /* pmemcpy.done_bitmap[tid] = true; */
+//   }
+//   return NULL;
+// }
+
+// // static void hemem_parallel_memset(void* addr, int c, size_t n)
+// // {
+// //   pthread_mutex_lock(&(pmemcpy.lock));
+// //   pmemcpy.dst = addr;
+// //   pmemcpy.length = n;
+// //   pmemcpy.write_zeros = true;
+
+// //   int r = pthread_barrier_wait(&pmemcpy.barrier);
+// //   assert(r ==0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+// //   r = pthread_barrier_wait(&pmemcpy.barrier);
+// //   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+// //   pthread_mutex_unlock(&(pmemcpy.lock));
+// // }
+
+// static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
+// {
+//   /* uint64_t i; */
+//   /* bool all_threads_done; */
 //   pthread_mutex_lock(&(pmemcpy.lock));
-//   pmemcpy.dst = addr;
-//   pmemcpy.length = n;
-//   pmemcpy.write_zeros = true;
+//   pmemcpy.dst = dst;
+//   pmemcpy.src = src;
+//   pmemcpy.length = length;
+//   pmemcpy.write_zeros = false;
 
 //   int r = pthread_barrier_wait(&pmemcpy.barrier);
-//   assert(r ==0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+//   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  
+//   //LOG("parallel migration started\n");
+  
+//   /* pmemcpy.activate = true; */
+
+//   /* while (!all_threads_done) { */
+//   /*   all_threads_done = true; */
+//   /*   for (i = 0; i < MAX_COPY_THREADS; i++) { */
+//   /*     if (!pmemcpy.done_bitmap[i]) { */
+//   /*       all_threads_done = false; */
+//   /*       break; */
+//   /*     } */
+//   /*   } */
+//   /* } */
 
 //   r = pthread_barrier_wait(&pmemcpy.barrier);
 //   assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  
+//   //LOG("parallel migration finished\n");
 //   pthread_mutex_unlock(&(pmemcpy.lock));
+
+//   /* pmemcpy.activate = false; */
+
+//   /* for (i = 0; i < MAX_COPY_THREADS; i++) { */
+//   /*   pmemcpy.done_bitmap[i] = false; */
+//   /* } */
 // }
-
-static void hemem_parallel_memcpy(void *dst, void *src, size_t length)
-{
-  /* uint64_t i; */
-  /* bool all_threads_done; */
-  pthread_mutex_lock(&(pmemcpy.lock));
-  pmemcpy.dst = dst;
-  pmemcpy.src = src;
-  pmemcpy.length = length;
-  pmemcpy.write_zeros = false;
-
-  int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  
-  //LOG("parallel migration started\n");
-  
-  /* pmemcpy.activate = true; */
-
-  /* while (!all_threads_done) { */
-  /*   all_threads_done = true; */
-  /*   for (i = 0; i < MAX_COPY_THREADS; i++) { */
-  /*     if (!pmemcpy.done_bitmap[i]) { */
-  /*       all_threads_done = false; */
-  /*       break; */
-  /*     } */
-  /*   } */
-  /* } */
-
-  r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  //LOG("parallel migration finished\n");
-  pthread_mutex_unlock(&(pmemcpy.lock));
-
-  /* pmemcpy.activate = false; */
-
-  /* for (i = 0; i < MAX_COPY_THREADS; i++) { */
-  /*   pmemcpy.done_bitmap[i] = false; */
-  /* } */
-}
 
 
 #include <linux/userfaultfd.h>
@@ -5165,7 +5165,7 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
             uint32_t j = i + 1;
             while (j < (block->used_length >> TARGET_PAGE_BITS) && !test_bit(j, write_hotness_bitmap)) {
                 ++j;
-                if (j - i >= 1024) break;
+                if (j - i >= 512) break;
             }
             ram_addr_t offset = ((ram_addr_t)i) << TARGET_PAGE_BITS;
             ram_addr_t length = ((ram_addr_t)j - i) << TARGET_PAGE_BITS;
@@ -5179,7 +5179,7 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
                 assert(0);
             }
 
-            hemem_parallel_memcpy(temp_map + offset, block->host + offset, length);
+            memcpy(temp_map + offset, block->host + offset, length);
             
             char *fixed_map = mmap(block->host + offset,
                                    length,
@@ -5195,8 +5195,8 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
                 exit(1);
             }
 
-            if (j - i < 5) usleep(1000);
-            else if (j - i < 10) usleep(100);
+            if (j - i < 20) usleep(800);
+            else if (j - i < 50) usleep(300);
             i = j - 1;
         }
 
@@ -5212,11 +5212,11 @@ static void *disaggregated_ram_move_thread(void *shm_obj) {
 }
 
 static void ram_load_disaggregated(QEMUFile *f, void *opaque, void *shm_obj) {
-    assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
-    assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
-    for (int i = 0; i < MAX_COPY_THREADS; i++) {
-        assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
-    }
+    // assert(!pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1));
+    // assert(!pthread_mutex_init(&pmemcpy.lock, NULL));
+    // for (int i = 0; i < MAX_COPY_THREADS; i++) {
+    //     assert(!pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread, (void*)(long)i));
+    // }
 
     disaggregated_ram_move_thread(shm_obj);
 }
