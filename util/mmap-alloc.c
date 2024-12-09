@@ -30,8 +30,6 @@
 #include <sys/vfs.h>
 #include <linux/magic.h>
 #include <numaif.h>
-#include <sched.h>
-#include <numa.h>
 #endif
 
 QemuFsType qemu_fd_getfs(int fd)
@@ -232,16 +230,9 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         map_sync_flags = MAP_SYNC | MAP_SHARED_VALIDATE;
     }
 
-    // Check this VM is src or dest based on cpu numa.
-    int cpu = sched_getcpu();
-    assert(cpu != -1);
-    int numa_node = numa_node_of_cpu(cpu); // Get the NUMA node of the CPU
-    assert(numa_node != -1);
-    int src_numa = get_config_value("SRC_NUMA");
-    int dst_numa = get_config_value("DST_NUMA");
-    assert(src_numa != -1 && dst_numa != -1);
-
-    if (src_numa == numa_node) {
+    int shm_fd = shm_open("/my_shared_memory", O_RDWR, 0666);
+    if (shm_fd == -1) {
+        // Don't have shm_obj, means the source VM.
         // QEMU's logic.
         activated_ptr = mmap(ptr, 
                             size, 
@@ -250,7 +241,9 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
                             fd,
                             map_offset);
         
-        unsigned long nodemask = 1 << numa_node;
+        int src_numa = get_config_value("SRC_NUMA");
+        assert(src_numa != -1);
+        unsigned long nodemask = 1 << src_numa;
         if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
             perror("mbind");
             exit(EXIT_FAILURE);
@@ -259,9 +252,9 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         printf("src_numa: %d\n", src_numa);
         memset(activated_ptr, 0, size);
     } else {
-        int shm_fd = shm_open("/my_shared_memory", O_RDWR, 0666);
         // Destination VM.
         // Zezhou: very hacky way...
+        int dst_numa = get_config_value("DST_NUMA");
         int cxl_numa = get_config_value("CXL_NUMA");
         int meta_state_length = get_config_value("META_STATE_LENGTH");
         int hot_page_state_length= get_config_value("HOT_PAGE_STATE_LENGTH");
@@ -272,11 +265,12 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
             activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
             // Zezhou: add numa_node_binding.
-            assert(activated_ptr != MAP_FAILED);
-            unsigned long nodemask = 1 << dst_numa;
-            if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
-                perror("mbind");
-                exit(EXIT_FAILURE);
+            if (activated_ptr != MAP_FAILED) {
+                unsigned long nodemask = 1 << dst_numa;
+                if (mbind(activated_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
+                    perror("mbind");
+                    exit(EXIT_FAILURE);
+                }
             }
             
             memset(activated_ptr, 0, size);
@@ -296,12 +290,6 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
                 perror("mmap");
                 exit(EXIT_FAILURE);
             }
-            unsigned long nodemask = 1 << dst_numa;
-            if (mbind(shm_ptr, size, MPOL_BIND, &nodemask, 32, 0) != 0) {
-                perror("mbind");
-                exit(EXIT_FAILURE);
-            }
-            puts("zezhou mbind..."); fflush(stdout);
 
             activated_ptr = (char *)shm_ptr + meta_state_length + hot_page_state_length + prefix_len;
             prefix_len += size;
