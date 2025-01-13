@@ -233,8 +233,12 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         map_sync_flags = MAP_SYNC | MAP_SHARED_VALIDATE;
     }
 
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
     activated_ptr = mmap(ptr, size, prot, flags | map_sync_flags, fd,
                          map_offset);
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    printf("mmap duration: %lld ns\n", end_time.tv_sec * 1000000000LL + end_time.tv_nsec - start_time.tv_sec * 1000000000LL - start_time.tv_nsec);
     
     // Check this VM is src or dest based on cpu numa.
     int cpu = sched_getcpu();
@@ -252,11 +256,12 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         exit(EXIT_FAILURE);
     }
 
+    puts("No pre fault for VM.");
     // pre-fault for src VM.
-    if (numa_node == src_numa) {
-        puts("Pre fault all memory pages.");
-        memset(activated_ptr, 0, size);
-    }
+    // if (numa_node == src_numa) {
+        // puts("Pre fault all memory pages.");
+        // memset(activated_ptr, 0, size);
+    // }
 
     if (activated_ptr == MAP_FAILED && map_sync_flags) {
         if (errno == ENOTSUP) {
