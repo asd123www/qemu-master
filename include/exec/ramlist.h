@@ -8,6 +8,10 @@
 
 typedef struct RAMBlockNotifier RAMBlockNotifier;
 
+/* Zezhou: dirty_log_mask is a bit-field telling which “dirty-tracking clients” have
+ * asked QEMU to watch writes to this address range
+ *    So you should see the third bit of `fr->dirty_log_mask` is set, indicating DIRTY_MEMORY_MIGRATION.
+ */
 #define DIRTY_MEMORY_VGA       0
 #define DIRTY_MEMORY_CODE      1
 #define DIRTY_MEMORY_MIGRATION 2

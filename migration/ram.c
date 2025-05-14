@@ -1058,6 +1058,7 @@ static void migration_trigger_throttle(RAMState *rs)
     }
 }
 
+// zezhou
 static void migration_bitmap_sync(RAMState *rs, bool last_stage)
 {
     RAMBlock *block;
@@ -2896,7 +2897,6 @@ static void ram_init_bitmaps(RAMState *rs)
         /* We don't use dirty log with background snapshots */
         if (!migrate_background_snapshot()) {
             memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION);
-            migration_bitmap_sync_precopy(rs, false);
         }
     }
     qemu_mutex_unlock_ramlist();
@@ -3225,6 +3225,12 @@ static int ram_save_setup_shm(QEMUFile *f, void *opaque, void *shm_obj)
         compress_threads_save_cleanup();
         return -1;
     }
+
+
+    puts("call fmsync_memory_dirty_log_huge after ram_init_all");fflush(stdout);
+    fmsync_memory_dirty_log_huge(false);
+
+
 
     (*rsp)->pss[RAM_CHANNEL_PRECOPY].shm_obj = (shm_target *)shm_obj;
     int max_hg_page_size = MAX(qemu_real_host_page_size(), TARGET_PAGE_SIZE);

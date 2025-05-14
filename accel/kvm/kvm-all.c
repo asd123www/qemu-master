@@ -618,6 +618,29 @@ static bool kvm_slot_get_dirty_log(KVMState *s, KVMSlot *slot)
     return ret == 0;
 }
 
+
+/* Just change the flag to `KVM_FMSYNC_GET_DIRTY_LOG_HUGE`.
+ */
+static bool kvm_slot_fmsync_dirty_log_huge(KVMState *s, KVMSlot *slot)
+{
+    struct kvm_dirty_log d = {};
+    int ret;
+
+    d.dirty_bitmap = slot->dirty_bmap;
+    d.slot = slot->slot | (slot->as_id << 16);
+    ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_HUGE, &d);
+
+    if (ret == -ENOENT) {
+        /* kernel does not have dirty bitmap in this slot */
+        ret = 0;
+    }
+    if (ret) {
+        error_report_once("%s: KVM_GET_DIRTY_LOG failed with %d",
+                          __func__, ret);
+    }
+    return ret == 0;
+}
+
 /* Should be with all slots_lock held for the address spaces. */
 static void kvm_dirty_ring_mark_page(KVMState *s, uint32_t as_id,
                                      uint32_t slot_id, uint64_t offset)
@@ -849,6 +872,47 @@ static void kvm_physical_sync_dirty_bitmap(KVMMemoryListener *kml,
         start_addr += slot_size;
         size -= slot_size;
     }
+}
+
+// same code path with `kvm_physical_sync_dirty_bitmap`.
+static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
+                                             MemoryRegionSection *section)
+{
+    KVMState *s = kvm_state;
+    KVMSlot *mem;
+    hwaddr start_addr, size;
+    hwaddr slot_size;
+
+    puts("================== kvm_physical_fmsync_dirty_bitmap =================="); fflush(stdout);
+
+    size = kvm_align_section(section, &start_addr);
+    while (size) {
+        slot_size = MIN(kvm_max_slot_size, size);
+        mem = kvm_lookup_matching_slot(kml, start_addr, slot_size);
+        if (!mem) {
+            /* We don't have a slot if we want to trap every access. */
+            return;
+        }
+
+        // check if mem->dirty_bmap is NULL
+        if (!mem->dirty_bmap) {
+            puts("kvm_physical_fmsync_dirty_bitmap: mem->dirty_bmap is NULL\n"); fflush(stdout);
+        }
+
+        ram_addr_t start = mem->ram_start_offset;
+        ram_addr_t pages = mem->memory_size / (2 * 1024 * 1024);
+
+        printf("In kvm_physical_fmsync_dirty_bitmap, mem->memory_size = %lu\n", mem->memory_size);
+        printf("                                     ram_addr start = %lu\n", start);
+        printf("                                     ram_addr pages = %lu\n", pages);
+
+        if (kvm_slot_fmsync_dirty_log_huge(s, mem)) {
+            // cpu_physical_memory_set_dirty_lebitmap(mem->dirty_bmap, start, pages);        
+        }
+        start_addr += slot_size;
+        size -= slot_size;
+    }
+    puts("=======================================================================\n\n"); fflush(stdout);
 }
 
 /* Alignment requirement for KVM_CLEAR_DIRTY_LOG - 64 pages */
@@ -1592,6 +1656,18 @@ static void kvm_log_sync(MemoryListener *listener,
     kvm_slots_unlock();
 }
 
+// same code path with `kvm_log_sync`.
+static void fmsync_kvm_log_sync(MemoryListener *listener,
+                                MemoryRegionSection *section)
+{
+    KVMMemoryListener *kml = container_of(listener, KVMMemoryListener, listener);
+
+    puts("Inside fmsync_kvm_log_sync");fflush(stdout);
+    kvm_slots_lock();
+    kvm_physical_fmsync_dirty_bitmap(kml, section);
+    kvm_slots_unlock();
+}
+
 static void kvm_log_sync_global(MemoryListener *l, bool last_stage)
 {
     KVMMemoryListener *kml = container_of(l, KVMMemoryListener, listener);
@@ -1746,6 +1822,16 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
         kml->listener.log_sync = kvm_log_sync;
         kml->listener.log_clear = kvm_log_clear;
     }
+
+
+    kml->listener.fmsync_log_sync = fmsync_kvm_log_sync;
+    puts("Init kml->listener.fmsync_log_sync.");
+    if (kml->listener.fmsync_log_sync) {
+        puts("Valid fmsync_log_sync");
+    } else {
+        puts("Invalid!");
+    }fflush(stdout);
+
 
     memory_listener_register(&kml->listener, as);
 

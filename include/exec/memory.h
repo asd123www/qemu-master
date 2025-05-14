@@ -963,6 +963,11 @@ struct MemoryListener {
     void (*log_sync)(MemoryListener *listener, MemoryRegionSection *section);
 
     /**
+     * @fmsync_log_sync: a mimic of @log_sync for fmsync().
+     */
+    void (*fmsync_log_sync)(MemoryListener *listener, MemoryRegionSection *section);
+
+    /**
      * @log_sync_global:
      *
      * This is the global version of @log_sync when the listener does
@@ -2520,6 +2525,8 @@ MemoryRegionSection memory_region_find(MemoryRegion *mr,
  * @last_stage: whether this is the last stage of live migration
  */
 void memory_global_dirty_log_sync(bool last_stage);
+
+void fmsync_memory_dirty_log_huge(bool last_stage);
 
 /**
  * memory_global_dirty_log_sync: synchronize the dirty log for all memory

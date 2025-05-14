@@ -2896,10 +2896,45 @@ bool memory_region_present(MemoryRegion *container, hwaddr addr)
     return mr && mr != container;
 }
 
+// Zezhou: memory_global_dirty_log_sync.
 void memory_global_dirty_log_sync(bool last_stage)
 {
     memory_region_sync_dirty_bitmap(NULL, last_stage);
 }
+
+
+// Zezhou: memory_global_dirty_log_sync.
+void fmsync_memory_dirty_log_huge(bool last_stage) {
+    MemoryListener *listener;
+    AddressSpace *as;
+    FlatView *view;
+    FlatRange *fr;
+    MemoryRegion *mr = NULL;
+
+    puts("Inside fmsync_memory_dirty_log_huge");fflush(stdout);
+
+    /* If the same address space has multiple log_sync listeners, we
+     * visit that address space's FlatView multiple times.  But because
+     * log_sync listeners are rare, it's still cheaper than walking each
+     * address space once.
+     */
+    QTAILQ_FOREACH(listener, &memory_listeners, link) {
+        as = listener->address_space;
+        view = address_space_get_flatview(as);
+        printf(" as=%s\n", as->name);fflush(stdout);
+        FOR_EACH_FLAT_RANGE(fr, view) {
+            if (!listener->fmsync_log_sync) continue;
+            printf("  fr->dirty_log_mask=%d\n", fr->dirty_log_mask);fflush(stdout);
+            if (fr->dirty_log_mask && (!mr || fr->mr == mr)) {
+                MemoryRegionSection mrs = section_from_flat_range(fr, view);
+                listener->fmsync_log_sync(listener, &mrs);
+            }
+        }
+        flatview_unref(view);
+        trace_memory_region_sync_dirty(mr ? mr->name : "(all)", listener->name, 0);
+    }
+}
+
 
 void memory_global_after_dirty_log_sync(void)
 {

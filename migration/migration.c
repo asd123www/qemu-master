@@ -4100,6 +4100,10 @@ static void *shm_migration_thread(void *opaque)
     qemu_savevm_state_setup_shm(&s->shm_obj);
     bql_unlock();
 
+
+    puts("Quit after setup");fflush(stdout);
+    return NULL;
+
     qemu_savevm_wait_unplug(s, MIGRATION_STATUS_SETUP,
                                MIGRATION_STATUS_ACTIVE);
 
