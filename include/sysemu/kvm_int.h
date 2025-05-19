@@ -19,7 +19,8 @@ typedef struct KVMSlot
 {
     hwaddr start_addr;
     ram_addr_t memory_size;
-    void *ram;
+    void *ram; // host mmap address.
+    void *ramblock; // host RAMBlock.
     int slot;
     int flags;
     int old_flags;

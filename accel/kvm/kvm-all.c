@@ -628,6 +628,7 @@ static bool kvm_slot_fmsync_dirty_log_huge(KVMState *s, KVMSlot *slot)
 
     d.dirty_bitmap = slot->dirty_bmap;
     d.slot = slot->slot | (slot->as_id << 16);
+    printf("slot->slot = %d\n", d.slot);
     ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_HUGE, &d);
 
     if (ret == -ENOENT) {
@@ -905,7 +906,16 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
         printf("In kvm_physical_fmsync_dirty_bitmap, mem->memory_size = %lu\n", mem->memory_size);
         printf("                                     ram_addr start = %lu\n", start);
         printf("                                     ram_addr pages = %lu\n", pages);
+        printf("                                     mem->ramblock = %s\n", ((RAMBlock*)mem->ramblock)->idstr);
+        printf("                                     mem->ram = %p\n", mem->ram);
+        printf("                                     mem->ramblock->ram = %p\n", ((RAMBlock*)mem->ramblock)->host);
 
+        /* asd123www WARNING: 
+         *    Now you can easily calculate the mapping: 
+         *        ramblock -> host is the host mmaped address, mem->ram actually is the offset + host.
+         *  Then what is the semantic of `kvm_slot_fmsync_dirty_log_huge`?
+         *  Does it include the boudary(misaligned address), or not? You should make this clear from the kernel impl.
+         */
         if (kvm_slot_fmsync_dirty_log_huge(s, mem)) {
             // cpu_physical_memory_set_dirty_lebitmap(mem->dirty_bmap, start, pages);        
         }
@@ -1424,6 +1434,8 @@ static void kvm_set_phys_mem(KVMMemoryListener *kml,
         mem->start_addr = start_addr;
         mem->ram_start_offset = ram_start_offset;
         mem->ram = ram;
+        // zezhou: save the ramblock, easier to know the reverse mapping.
+        mem->ramblock = mr->ram_block;
         mem->flags = kvm_mem_flags(mr);
         kvm_slot_init_dirty_bitmap(mem);
         err = kvm_set_user_memory_region(kml, mem, true);

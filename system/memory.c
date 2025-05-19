@@ -2919,6 +2919,10 @@ void fmsync_memory_dirty_log_huge(bool last_stage) {
      * address space once.
      */
     QTAILQ_FOREACH(listener, &memory_listeners, link) {
+        // asd123www WARNING: which listener to use?
+        // I can just remember the name and call the corresponding listener.
+        // no need to check the bit.
+        printf("Inside fmsync_memory_dirty_log_huge: listener->name=%s\n", listener->name);fflush(stdout);
         as = listener->address_space;
         view = address_space_get_flatview(as);
         printf(" as=%s\n", as->name);fflush(stdout);
