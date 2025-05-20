@@ -478,8 +478,9 @@ static int kvm_slot_update_flags(KVMMemoryListener *kml, KVMSlot *mem,
         return 0;
     }
 
-    kvm_slot_init_dirty_bitmap(mem);
-    return kvm_set_user_memory_region(kml, mem, false);
+    puts("We don't actually call kvm_set_user_memory_region here\n"); fflush(stdout);
+    return 0;
+    // return kvm_set_user_memory_region(kml, mem, false);
 }
 
 static int kvm_section_update_flags(KVMMemoryListener *kml,
@@ -883,6 +884,7 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
     KVMSlot *mem;
     hwaddr start_addr, size;
     hwaddr slot_size;
+    unsigned long left_, right_;
 
     puts("================== kvm_physical_fmsync_dirty_bitmap =================="); fflush(stdout);
 
@@ -897,7 +899,10 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
 
         // check if mem->dirty_bmap is NULL
         if (!mem->dirty_bmap) {
-            puts("kvm_physical_fmsync_dirty_bitmap: mem->dirty_bmap is NULL\n"); fflush(stdout);
+            printf("mem->dirty_bmap is NULL, mem->memory_size = %lu\n", mem->memory_size);
+            mem->dirty_bmap_size = (mem->memory_size / 4096 + 7) / 8;
+            printf("mem->dirty_bmap_size = %lu\n", mem->dirty_bmap_size);
+            mem->dirty_bmap = g_malloc0(mem->dirty_bmap_size);
         }
 
         ram_addr_t start = mem->ram_start_offset;
@@ -916,8 +921,46 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
          *  Then what is the semantic of `kvm_slot_fmsync_dirty_log_huge`?
          *  Does it include the boudary(misaligned address), or not? You should make this clear from the kernel impl.
          */
-        if (kvm_slot_fmsync_dirty_log_huge(s, mem)) {
-            // cpu_physical_memory_set_dirty_lebitmap(mem->dirty_bmap, start, pages);        
+        if (strcmp(((RAMBlock*)mem->ramblock)->idstr, "pc.ram") == 0) {
+            if (kvm_slot_fmsync_dirty_log_huge(s, mem)) {
+
+                // if not pc.ram, then we ignore.
+                // s->dirty_bmap stores the information of the dirty pages.
+                assert(mem->dirty_bmap);
+                assert(((RAMBlock*)mem->ramblock)->bmap);
+
+                assert(mem->ram_start_offset + ((RAMBlock*)mem->ramblock)->host == mem->ram);
+
+                left_ = mem->ram_start_offset / 4096;
+                right_ = (mem->ram_start_offset + mem->memory_size) / 4096;
+
+                // this round is guaranteed to be the same with the kernel's.
+                // because kernel gfn is the composition of the memslot and the host PT.
+                left_ = left_ / 512;
+                right_ = (right_ + 511) / 512;
+
+                unsigned long count = 0;
+
+                printf("left_ = %lu, right_ = %lu\n", left_, right_);
+
+                for (int i = left_; i < right_; i++) {
+                    int idx = i - left_;
+                    if (mem->dirty_bmap[idx / 64] & (1UL << (idx % 64))) {
+                        set_bit(i, ((RAMBlock*)mem->ramblock)->bmap);
+                        mem->dirty_bmap[idx / 64] ^= (1UL << (idx % 64));
+                        ++count;
+                    }
+                }
+                for (int i = left_; i < right_; i++) {
+                    assert(mem->dirty_bmap[i / 64] == 0);
+                }
+
+                printf("memslot dirty count = %lu\n", count);
+                printf("s->dirty_bmap size = %lu\n", mem->dirty_bmap_size);
+                printf("s->dirty_bmap length = %lu\n", sizeof(mem->dirty_bmap));
+                printf("ramblock->bmap length = %lu\n", sizeof(((RAMBlock*)mem->ramblock)->bmap));
+                printf("ramblock->length = %lu\n", sizeof(((RAMBlock*)mem->ramblock)->used_length));
+            }
         }
         start_addr += slot_size;
         size -= slot_size;
@@ -1835,15 +1878,7 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
         kml->listener.log_clear = kvm_log_clear;
     }
 
-
     kml->listener.fmsync_log_sync = fmsync_kvm_log_sync;
-    puts("Init kml->listener.fmsync_log_sync.");
-    if (kml->listener.fmsync_log_sync) {
-        puts("Valid fmsync_log_sync");
-    } else {
-        puts("Invalid!");
-    }fflush(stdout);
-
 
     memory_listener_register(&kml->listener, as);
 
