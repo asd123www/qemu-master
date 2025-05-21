@@ -2911,8 +2911,6 @@ void fmsync_memory_dirty_log_huge(bool last_stage) {
     FlatRange *fr;
     MemoryRegion *mr = NULL;
 
-    puts("Inside fmsync_memory_dirty_log_huge");fflush(stdout);
-
     /* If the same address space has multiple log_sync listeners, we
      * visit that address space's FlatView multiple times.  But because
      * log_sync listeners are rare, it's still cheaper than walking each
@@ -2922,13 +2920,10 @@ void fmsync_memory_dirty_log_huge(bool last_stage) {
         // asd123www WARNING: which listener to use?
         // I can just remember the name and call the corresponding listener.
         // no need to check the bit.
-        printf("Inside fmsync_memory_dirty_log_huge: listener->name=%s\n", listener->name);fflush(stdout);
         as = listener->address_space;
         view = address_space_get_flatview(as);
-        printf(" as=%s\n", as->name);fflush(stdout);
         FOR_EACH_FLAT_RANGE(fr, view) {
             if (!listener->fmsync_log_sync) continue;
-            printf("  fr->dirty_log_mask=%d\n", fr->dirty_log_mask);fflush(stdout);
             if (fr->dirty_log_mask && (!mr || fr->mr == mr)) {
                 MemoryRegionSection mrs = section_from_flat_range(fr, view);
                 listener->fmsync_log_sync(listener, &mrs);

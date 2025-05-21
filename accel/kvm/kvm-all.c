@@ -629,7 +629,6 @@ static bool kvm_slot_fmsync_dirty_log_huge(KVMState *s, KVMSlot *slot)
 
     d.dirty_bitmap = slot->dirty_bmap;
     d.slot = slot->slot | (slot->as_id << 16);
-    printf("slot->slot = %d\n", d.slot);
     ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_HUGE, &d);
 
     if (ret == -ENOENT) {
@@ -886,8 +885,6 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
     hwaddr slot_size;
     unsigned long left_, right_;
 
-    puts("================== kvm_physical_fmsync_dirty_bitmap =================="); fflush(stdout);
-
     size = kvm_align_section(section, &start_addr);
     while (size) {
         slot_size = MIN(kvm_max_slot_size, size);
@@ -899,21 +896,9 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
 
         // check if mem->dirty_bmap is NULL
         if (!mem->dirty_bmap) {
-            printf("mem->dirty_bmap is NULL, mem->memory_size = %lu\n", mem->memory_size);
             mem->dirty_bmap_size = (mem->memory_size / 4096 + 7) / 8;
-            printf("mem->dirty_bmap_size = %lu\n", mem->dirty_bmap_size);
             mem->dirty_bmap = g_malloc0(mem->dirty_bmap_size);
         }
-
-        ram_addr_t start = mem->ram_start_offset;
-        ram_addr_t pages = mem->memory_size / (2 * 1024 * 1024);
-
-        printf("In kvm_physical_fmsync_dirty_bitmap, mem->memory_size = %lu\n", mem->memory_size);
-        printf("                                     ram_addr start = %lu\n", start);
-        printf("                                     ram_addr pages = %lu\n", pages);
-        printf("                                     mem->ramblock = %s\n", ((RAMBlock*)mem->ramblock)->idstr);
-        printf("                                     mem->ram = %p\n", mem->ram);
-        printf("                                     mem->ramblock->ram = %p\n", ((RAMBlock*)mem->ramblock)->host);
 
         /* asd123www WARNING: 
          *    Now you can easily calculate the mapping: 
@@ -940,9 +925,6 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
                 right_ = (right_ + 511) / 512;
 
                 unsigned long count = 0;
-
-                printf("left_ = %lu, right_ = %lu\n", left_, right_);
-
                 for (int i = left_; i < right_; i++) {
                     int idx = i - left_;
                     if (mem->dirty_bmap[idx / 64] & (1UL << (idx % 64))) {
@@ -954,18 +936,11 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
                 for (int i = left_; i < right_; i++) {
                     assert(mem->dirty_bmap[i / 64] == 0);
                 }
-
-                printf("memslot dirty count = %lu\n", count);
-                printf("s->dirty_bmap size = %lu\n", mem->dirty_bmap_size);
-                printf("s->dirty_bmap length = %lu\n", sizeof(mem->dirty_bmap));
-                printf("ramblock->bmap length = %lu\n", sizeof(((RAMBlock*)mem->ramblock)->bmap));
-                printf("ramblock->length = %lu\n", sizeof(((RAMBlock*)mem->ramblock)->used_length));
             }
         }
         start_addr += slot_size;
         size -= slot_size;
     }
-    puts("=======================================================================\n\n"); fflush(stdout);
 }
 
 /* Alignment requirement for KVM_CLEAR_DIRTY_LOG - 64 pages */
@@ -1717,7 +1692,6 @@ static void fmsync_kvm_log_sync(MemoryListener *listener,
 {
     KVMMemoryListener *kml = container_of(listener, KVMMemoryListener, listener);
 
-    puts("Inside fmsync_kvm_log_sync");fflush(stdout);
     kvm_slots_lock();
     kvm_physical_fmsync_dirty_bitmap(kml, section);
     kvm_slots_unlock();
