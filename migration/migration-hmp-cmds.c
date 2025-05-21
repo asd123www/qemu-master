@@ -488,26 +488,46 @@ end:
     hmp_handle_error(mon, err);
 }
 
+extern int get_config_value(const char *key);
+
 /* Zezhou: shared-memory migration incoming.
  */
 void hmp_migrate_incoming_shm(Monitor *mon, const QDict *qdict) 
 {
     Error *err = NULL;
-    const char *uri = qdict_get_str(qdict, "uri");
+    // const char *uri = qdict_get_str(qdict, "uri");
     uint64_t shm_size = qdict_get_int(qdict, "value"); // memory size, GB.
     shm_size *= 1024ll * 1024 * 1024;
 
-    int shm_fd = shm_open(uri, O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("shm_open"); assert(0);
+    int cxl_numa = get_config_value("CXL_NUMA");
+    assert(cxl_numa != -1);
+    char path[128];
+    int n = snprintf(path, sizeof(path),
+                     "/mnt/hugepages_node%d/fmsync_hugepage_image",
+                     cxl_numa);
+    if (n < 0 || n >= (int)sizeof(path)) {
+        fprintf(stderr, "path too long\n");
         exit(EXIT_FAILURE);
     }
-    
-    // Map the shared memory object into the process's address space
-    void *shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    int fd = open(path, O_RDWR, 0666);
+    if (fd == -1) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    void *shm_ptr = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shm_ptr == MAP_FAILED) {
         perror("mmap");
         exit(EXIT_FAILURE);
+    }
+
+    uintptr_t address = (uintptr_t)shm_ptr;
+    size_t alignment = 2 * 1024 * 1024; // 2MB
+
+    if ((address % alignment) == 0) {
+        printf("Pointer is 2MB aligned: %p\n", shm_ptr);
+    } else {
+        printf("Pointer is NOT 2MB aligned: %p\n", shm_ptr);
     }
 
     qmp_migrate_incoming_shm(shm_ptr, shm_size, &err);
@@ -865,44 +885,52 @@ void hmp_migrate(Monitor *mon, const QDict *qdict)
     }
 }
 
-extern int get_config_value(const char *key);
-
 /* Zezhou: shm_migrate.
  */ 
 void hmp_shm_migrate(Monitor *mon, const QDict *qdict)
 {
-    const char *shm_name = qdict_get_str(qdict, "uri"); // path to shared memory.
+    // const char *shm_name = qdict_get_str(qdict, "uri"); // path to shared memory.
     uint64_t shm_size = qdict_get_int(qdict, "value"); // memory size, GB.
     uint64_t duration = qdict_get_int(qdict, "duration"); // target iteration duration in us.
     shm_size *= 1024ll * 1024 * 1024;
 
     Error *err = NULL;
 
-    // create the shared memory.
-    int shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("shm_open");
+
+    int cxl_numa = get_config_value("CXL_NUMA");
+    assert(cxl_numa != -1);
+    char path[128];
+    int n = snprintf(path, sizeof(path),
+                     "/mnt/hugepages_node%d/fmsync_hugepage_image",
+                     cxl_numa);
+    if (n < 0 || n >= (int)sizeof(path)) {
+        fprintf(stderr, "path too long\n");
         exit(EXIT_FAILURE);
     }
-    // Set the size of the shared memory object
-    if (ftruncate(shm_fd, shm_size) == -1) {
+
+
+    int fd = open(path, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    if (ftruncate(fd, shm_size) == -1) {
         perror("ftruncate");
         exit(EXIT_FAILURE);
     }
-    // Map the shared memory object into the process's address space
-    void *shm_ptr = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    void *shm_ptr = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shm_ptr == MAP_FAILED) {
         perror("mmap");
         exit(EXIT_FAILURE);
     }
 
-    int cxl_numa = get_config_value("CXL_NUMA");
-    assert(cxl_numa != -1);
-    unsigned long nodemask = 1 << cxl_numa; // numa_node_binding.
-    if (mbind(shm_ptr, shm_size, MPOL_BIND, &nodemask, sizeof(nodemask) * 8, 0) != 0) {
-        perror("mbind");
-        exit(-1);
-        return;
+    uintptr_t address = (uintptr_t)shm_ptr;
+    size_t alignment = 2 * 1024 * 1024; // 2MB
+    
+    if ((address % alignment) == 0) {
+        printf("Pointer is 2MB aligned: %p\n", shm_ptr);
+    } else {
+        printf("Pointer is NOT 2MB aligned: %p\n", shm_ptr);
     }
 
     // migrate via shared memory.

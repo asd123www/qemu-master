@@ -230,7 +230,18 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         map_sync_flags = MAP_SYNC | MAP_SHARED_VALIDATE;
     }
 
-    int shm_fd = shm_open("/my_shared_memory", O_RDWR, 0666);
+    int cxl_numa = get_config_value("CXL_NUMA");
+    assert(cxl_numa != -1);
+    char path[128];
+    int n = snprintf(path, sizeof(path),
+                     "/mnt/hugepages_node%d/fmsync_hugepage_image",
+                     cxl_numa);
+    if (n < 0 || n >= (int)sizeof(path)) {
+        fprintf(stderr, "path too long\n");
+        exit(EXIT_FAILURE);
+    }
+    int shm_fd = open(path, O_RDWR, 0666);
+
     if (shm_fd == -1) {
         // Don't have shm_obj, means the source VM.
         // QEMU's logic.
@@ -255,7 +266,6 @@ static void *mmap_activate(void *ptr, size_t size, int fd,
         // Destination VM.
         // Zezhou: very hacky way...
         int dst_numa = get_config_value("DST_NUMA");
-        int cxl_numa = get_config_value("CXL_NUMA");
         int meta_state_length = get_config_value("META_STATE_LENGTH");
         int hot_page_state_length= get_config_value("HOT_PAGE_STATE_LENGTH");
         assert(dst_numa != -1 && cxl_numa != -1 && meta_state_length != -1 && hot_page_state_length != -1);
