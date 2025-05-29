@@ -1439,6 +1439,7 @@ struct kvm_vfio_spapr_tce {
 
 // Zezhou: for fmsync.
 #define KVM_FMSYNC_GET_DIRTY_LOG_HUGE   _IOWR(KVMIO, 0xe4, struct kvm_dirty_log)
+#define KVM_FMSYNC_GET_DIRTY_LOG_BASE_WITH_SPLIT _IOWR(KVMIO, 0xe5, struct kvm_dirty_log)
 
 /* enable ucontrol for s390 */
 struct kvm_s390_ucas_mapping {

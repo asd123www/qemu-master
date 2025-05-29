@@ -622,14 +622,19 @@ static bool kvm_slot_get_dirty_log(KVMState *s, KVMSlot *slot)
 
 /* Just change the flag to `KVM_FMSYNC_GET_DIRTY_LOG_HUGE`.
  */
-static bool kvm_slot_fmsync_dirty_log_huge(KVMState *s, KVMSlot *slot)
+static bool kvm_slot_fmsync_dirty_log_huge(KVMState *s, KVMSlot *slot, bool switchover)
 {
     struct kvm_dirty_log d = {};
     int ret;
 
     d.dirty_bitmap = slot->dirty_bmap;
     d.slot = slot->slot | (slot->as_id << 16);
-    ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_HUGE, &d);
+
+    if (!switchover) {
+        ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_HUGE, &d);
+    } else {
+        ret = kvm_vm_ioctl(s, KVM_FMSYNC_GET_DIRTY_LOG_BASE_WITH_SPLIT, &d);
+    }
 
     if (ret == -ENOENT) {
         /* kernel does not have dirty bitmap in this slot */
@@ -877,7 +882,8 @@ static void kvm_physical_sync_dirty_bitmap(KVMMemoryListener *kml,
 
 // same code path with `kvm_physical_sync_dirty_bitmap`.
 static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
-                                             MemoryRegionSection *section)
+                                             MemoryRegionSection *section,
+                                             bool switchover)
 {
     KVMState *s = kvm_state;
     KVMSlot *mem;
@@ -907,7 +913,7 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
          *  Does it include the boudary(misaligned address), or not? You should make this clear from the kernel impl.
          */
         if (strcmp(((RAMBlock*)mem->ramblock)->idstr, "pc.ram") == 0) {
-            if (kvm_slot_fmsync_dirty_log_huge(s, mem)) {
+            if (kvm_slot_fmsync_dirty_log_huge(s, mem, switchover)) {
 
                 // if not pc.ram, then we ignore.
                 // s->dirty_bmap stores the information of the dirty pages.
@@ -1688,12 +1694,13 @@ static void kvm_log_sync(MemoryListener *listener,
 
 // same code path with `kvm_log_sync`.
 static void fmsync_kvm_log_sync(MemoryListener *listener,
-                                MemoryRegionSection *section)
+                                MemoryRegionSection *section,
+                                bool switchover)
 {
     KVMMemoryListener *kml = container_of(listener, KVMMemoryListener, listener);
 
     kvm_slots_lock();
-    kvm_physical_fmsync_dirty_bitmap(kml, section);
+    kvm_physical_fmsync_dirty_bitmap(kml, section, switchover);
     kvm_slots_unlock();
 }
 

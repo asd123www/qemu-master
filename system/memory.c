@@ -2904,7 +2904,7 @@ void memory_global_dirty_log_sync(bool last_stage)
 
 
 // Zezhou: memory_global_dirty_log_sync.
-void fmsync_memory_dirty_log_huge(bool last_stage) {
+void fmsync_memory_dirty_log_huge(bool last_stage, bool switchover) {
     MemoryListener *listener;
     AddressSpace *as;
     FlatView *view;
@@ -2926,7 +2926,7 @@ void fmsync_memory_dirty_log_huge(bool last_stage) {
             if (!listener->fmsync_log_sync) continue;
             if (fr->dirty_log_mask && (!mr || fr->mr == mr)) {
                 MemoryRegionSection mrs = section_from_flat_range(fr, view);
-                listener->fmsync_log_sync(listener, &mrs);
+                listener->fmsync_log_sync(listener, &mrs, switchover);
             }
         }
         flatview_unref(view);

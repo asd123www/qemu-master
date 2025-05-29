@@ -3481,7 +3481,7 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
         }
         first_time = false;
     } else {
-        fmsync_memory_dirty_log_huge(false);
+        fmsync_memory_dirty_log_huge(false, switchover);
 
         WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
             WITH_RCU_READ_LOCK_GUARD() {
@@ -3516,10 +3516,10 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     printf("iteration time: %ld us, switchover: %d\n\n", duration, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
-    if (switchover) {
-        printf("The last iteration duratoin is %ld us\n", duration);fflush(stdout);
-        return 1;
-    }
+    // if (switchover) {
+    //     printf("The last iteration duratoin is %ld us\n", duration);fflush(stdout);
+    //     return 1;
+    // }
 
     return 0;
 }
@@ -3632,7 +3632,7 @@ static int ram_save_complete_shm(QEMUFile *f, void *opaque)
                 memcpy(pss->shm_obj->ram + block->pages_offset_shm, block->host, block->used_length);
             } else {
                 // the pc.ram block.
-                fmsync_memory_dirty_log_huge(false);
+                fmsync_memory_dirty_log_huge(false, true);
                 
                 assert(block->used_length % (2 * 1024 * 1024) == 0);
                 unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
