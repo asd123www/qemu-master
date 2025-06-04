@@ -3458,7 +3458,7 @@ void hotness_save(int idx, unsigned long *write_hotness_bitmap) {
  * @f: QEMUFile where to send the data
  * @opaque: RAMState pointer
  */
-static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
+static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover_)
 {
     static bool first_time = true;
     RAMState **temp = opaque;
@@ -3466,8 +3466,12 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     PageSearchStatus *pss = &rs->pss[RAM_CHANNEL_PRECOPY];
     assert(migration_in_postcopy() == false);
 
+    bool switchover = true;
+
     int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     if (first_time) {
+        fmsync_memory_dirty_log_huge(false, switchover);
+
         WITH_QEMU_LOCK_GUARD(&rs->bitmap_mutex) {
             WITH_RCU_READ_LOCK_GUARD() {
                 RAMBlock *block;
@@ -3492,7 +3496,8 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                     
                     // the pc.ram block.
                     assert(block->used_length % (2 * 1024 * 1024) == 0);
-                    unsigned long nbits = block->used_length >> (21);
+                    int page_size = switchover?12:21;
+                    unsigned long nbits = block->used_length >> page_size;
                     unsigned long bit = 0;
                     unsigned long dirty_count = 0;
 
@@ -3501,12 +3506,16 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
                         if (bit >= nbits) break;
                         assert(test_and_clear_bit(bit, block->bmap));
 
-                        ram_addr_t offset = ((ram_addr_t)bit) << (21);
-                        memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, (1 << 21));
+                        ram_addr_t offset = ((ram_addr_t)bit) << (page_size);
+                        memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, (1 << page_size));
                         ++bit;
                         ++dirty_count;
                     }
-                    printf("block %s, dirty huge page count: %lu\n", block->idstr, dirty_count);fflush(stdout);
+                    if (!switchover) {
+                        printf("block %s, dirty huge page count: %lu\n", block->idstr, dirty_count);fflush(stdout);
+                    } else {
+                        printf("block %s, dirty small page count: %lu\n", block->idstr, dirty_count);fflush(stdout);
+                    }
                 }
             }
         }
@@ -3516,10 +3525,10 @@ static int ram_save_iterate_shm(QEMUFile *f, void *opaque, bool switchover)
     printf("iteration time: %ld us, switchover: %d\n\n", duration, switchover);fflush(stdout);
 
     // < 50ms then switch to the final round.
-    // if (switchover) {
-    //     printf("The last iteration duratoin is %ld us\n", duration);fflush(stdout);
-    //     return 1;
-    // }
+    if (switchover_) {
+        printf("The last iteration duratoin is %ld us\n", duration);fflush(stdout);
+        return 1;
+    }
 
     return 0;
 }
@@ -3635,25 +3644,47 @@ static int ram_save_complete_shm(QEMUFile *f, void *opaque)
                 fmsync_memory_dirty_log_huge(false, true);
                 
                 assert(block->used_length % (2 * 1024 * 1024) == 0);
-                unsigned long nbits = block->used_length >> TARGET_PAGE_BITS;
+                unsigned long nbits = block->used_length >> (12);
                 unsigned long bit = 0;
 
                 while (1) {
                     bit = find_next_bit(block->bmap, nbits, bit);
                     if (bit >= nbits) break;
                     assert(test_and_clear_bit(bit, block->bmap));
+
+                    printf("%lu ", bit);
                     
-                    ram_addr_t offset = ((ram_addr_t)bit) << (21);
-                    memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, (1 << 21));
+                    ram_addr_t offset = ((ram_addr_t)bit) << (12);
+                    memcpy(pss->shm_obj->ram + block->pages_offset_shm + offset, block->host + offset, (1 << (12)));
                     ++bit;
                     ++dirty_count;
                 }
+                puts("");
             }
         }
     }
 
     printf("Last iteration time: %ld us\n", qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time);
     printf("final rount copy pages: %d\n", dirty_count);fflush(stdout);
+
+
+    // check the correctness of memory blocks.
+    RAMBlock *block;
+    RAMBLOCK_FOREACH_MIGRATABLE(block) {
+        // memcpy(pss->shm_obj->ram + block->pages_offset_shm, block->host, block->used_length);
+        unsigned long nbits = block->used_length >> (12);
+
+        for(unsigned long i = 0; i < nbits; ++i) {
+            ram_addr_t offset = ((ram_addr_t)i) << (12);
+            int rt = memcmp(pss->shm_obj->ram + block->pages_offset_shm + offset, 
+                            block->host + offset,
+                            (1 << 12));
+            if (rt != 0) {
+                printf("error block: %s, page #: %lu\n", block->idstr, i);fflush(stdout);
+            }
+        }
+    }
+    puts("You succeed!");fflush(stdout);
 
     return 0;
 }

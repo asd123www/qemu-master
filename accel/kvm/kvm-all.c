@@ -925,22 +925,32 @@ static void kvm_physical_fmsync_dirty_bitmap(KVMMemoryListener *kml,
                 left_ = mem->ram_start_offset / 4096;
                 right_ = (mem->ram_start_offset + mem->memory_size) / 4096;
 
-                // this round is guaranteed to be the same with the kernel's.
-                // because kernel gfn is the composition of the memslot and the host PT.
-                left_ = left_ / 512;
-                right_ = (right_ + 511) / 512;
+            printf("memslot left: %lu, right: %lu\n", left_, right_);
 
-                unsigned long count = 0;
-                for (int i = left_; i < right_; i++) {
-                    int idx = i - left_;
-                    if (mem->dirty_bmap[idx / 64] & (1UL << (idx % 64))) {
-                        set_bit(i, ((RAMBlock*)mem->ramblock)->bmap);
-                        mem->dirty_bmap[idx / 64] ^= (1UL << (idx % 64));
-                        ++count;
+                if (switchover == false) {
+                    // this round is guaranteed to be the same with the kernel's.
+                    // because kernel gfn is the composition of the memslot and the host PT.
+                    left_ = left_ / 512;
+                    right_ = (right_ + 511) / 512;
+
+                    for (int i = left_; i < right_; i++) {
+                        int idx = i - left_;
+                        if (mem->dirty_bmap[idx / 64] & (1UL << (idx % 64))) {
+                            set_bit(i, ((RAMBlock*)mem->ramblock)->bmap);
+                            mem->dirty_bmap[idx / 64] ^= (1UL << (idx % 64));
+                        }
                     }
-                }
-                for (int i = left_; i < right_; i++) {
-                    assert(mem->dirty_bmap[i / 64] == 0);
+                    for (int i = left_; i < right_; i+=64) {
+                        assert(mem->dirty_bmap[i / 64] == 0);
+                    }
+                } else {
+                    for (int i = left_; i < right_; i++) {
+                        int idx = i - left_;
+                        if (mem->dirty_bmap[idx / 64] & (1UL << (idx % 64))) {
+                            set_bit(i, ((RAMBlock*)mem->ramblock)->bmap);
+                            mem->dirty_bmap[idx / 64] ^= (1UL << (idx % 64));
+                        }
+                    }
                 }
             }
         }
